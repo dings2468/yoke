@@ -169,7 +169,7 @@ describe("runInit, non-interactive", () => {
     expect(local).toContain("sk-testsecret");
   });
 
-  it("adds gitignore lines and reports user servers left in place", async () => {
+  it("adds gitignore lines and no longer reports user servers left in place", async () => {
     await seedNativeFile();
     stdout = [];
     await runInit({ ...DEFAULT_OPTS }, makeDeps());
@@ -179,7 +179,7 @@ describe("runInit, non-interactive", () => {
     expect(gitignore).toContain("yoke.local.yaml");
     expect(gitignore).toContain("AGENTS.local.md");
     const out = stdout.join("");
-    expect(out).toContain("1 user-scope servers left in place");
+    expect(out).not.toContain("left in place");
     expect(out).toContain("next: yoke sync");
   });
 
