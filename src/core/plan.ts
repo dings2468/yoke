@@ -15,11 +15,17 @@ import type {
 } from "../adapters/base.js";
 import type { DriftReport } from "./drift.js";
 import type { Fs, ReadFs } from "./fs-safe.js";
-import { readTextIfExists } from "./fs-safe.js";
+import { readTextIfExists, toReadFs } from "./fs-safe.js";
 import type { Exec } from "./git.js";
 import type { ResolvedYokeConfig, Scope, StateKey, YokeStateLock } from "./schema.js";
-import { YokeStateLockSchema } from "./schema.js";
-import type { Env } from "./scopes.js";
+import { HarnessNameSchema, ScopeSchema, YokeStateLockSchema } from "./schema.js";
+import {
+  defaultScopePaths,
+  type Env,
+  loadScopeInputs,
+  parseScopeConfig,
+  resolveConfig,
+} from "./scopes.js";
 
 // #region P2 types and lock io
 export const LOCK_DIR = ".yoke";
@@ -206,3 +212,131 @@ export function serializeLock(lock: YokeStateLock): string {
   return `${JSON.stringify({ version: valid.version, lastSyncedAt: valid.lastSyncedAt, harnesses }, null, 2)}\n`;
 }
 // #endregion P2 types and lock io
+
+// #region P4 request and config
+/** sync -> ["project","local"]; global -> ["user"]; all -> ["user","project","local"]; both flags -> SyncRequestError. */
+export function scopesForFlags(flags: {
+  readonly global: boolean;
+  readonly all: boolean;
+}): readonly Scope[] {
+  if (flags.global && flags.all) {
+    throw new SyncRequestError("--global and --all cannot be used together");
+  }
+  if (flags.global) return ["user"];
+  if (flags.all) return ["user", "project", "local"];
+  return ["project", "local"];
+}
+
+/** Throws SyncRequestError for an invalid request. Pure: no I/O. */
+export function validateRequest(req: PlanRequest): void {
+  if (!isAbsolute(req.repoPath)) {
+    throw new SyncRequestError(`repoPath must be absolute: "${req.repoPath}"`);
+  }
+  if (!isAbsolute(req.homeDir)) {
+    throw new SyncRequestError(`homeDir must be absolute: "${req.homeDir}"`);
+  }
+  if (req.scopes.length === 0) {
+    throw new SyncRequestError("no scopes to plan");
+  }
+  const seen = new Set<Scope>();
+  for (const scope of req.scopes) {
+    if (!ScopeSchema.safeParse(scope).success) {
+      throw new SyncRequestError(`invalid scope "${String(scope)}"`);
+    }
+    if (seen.has(scope)) {
+      throw new SyncRequestError(`duplicate scope "${scope}"`);
+    }
+    seen.add(scope);
+  }
+  if (req.global && !(req.scopes.length === 1 && req.scopes[0] === "user")) {
+    throw new SyncRequestError('global requires scopes to be exactly ["user"]');
+  }
+  if (req.harnesses !== undefined) {
+    const names = new Set<string>();
+    for (const name of req.harnesses) {
+      if (!HarnessNameSchema.safeParse(name).success) {
+        throw new SyncRequestError(`invalid harness name "${name}"`);
+      }
+      if (names.has(name)) {
+        throw new SyncRequestError(`duplicate harness "${name}"`);
+      }
+      names.add(name);
+    }
+  }
+}
+
+/**
+ * Loads the scope files and resolves the config. Reads go through the read-only view of `fs` only.
+ * global reads only `<userConfigDir>/yoke.yaml`; a repo run needs a project or local file.
+ */
+export async function loadPass(
+  fs: ReadFs,
+  req: PlanRequest,
+  userConfigDir: string,
+): Promise<{ readonly pass: PlanPass | undefined; readonly warnings: readonly string[] }> {
+  validateRequest(req);
+  if (!isAbsolute(userConfigDir)) {
+    throw new SyncRequestError(`userConfigDir must be absolute: "${userConfigDir}"`);
+  }
+  const read = toReadFs(fs);
+  const warnings: string[] = [];
+  const warn = (message: string): void => {
+    warnings.push(message);
+  };
+
+  if (req.global) {
+    const path = join(userConfigDir, "yoke.yaml");
+    const text = await readTextIfExists(read, path);
+    if (text === undefined) {
+      return {
+        pass: undefined,
+        warnings: [`no user config at ${path}; nothing to sync for the user scope`],
+      };
+    }
+    const userConfig = parseScopeConfig(text, "user", path);
+    const config = resolveConfig(
+      { user: { config: userConfig, baseDir: userConfigDir } },
+      { projectDir: req.repoPath, warn },
+    );
+    return { pass: { scopes: req.scopes, config }, warnings };
+  }
+
+  const paths = defaultScopePaths({ repoRoot: req.repoPath, userConfigDir });
+  const inputs = await loadScopeInputs((path) => readTextIfExists(read, path), paths);
+  if (inputs.project === undefined && inputs.local === undefined) {
+    throw new SyncRequestError(
+      `no yoke.yaml or yoke.local.yaml in ${req.repoPath}; run "yoke init" in this repo first`,
+    );
+  }
+  const config = resolveConfig(inputs, { projectDir: req.repoPath, warn });
+  return { pass: { scopes: req.scopes, config }, warnings };
+}
+
+/**
+ * Harness selection in config order. `requested` (when given) filters the list. A name without a factory is skipped with a
+ * warning; a requested name missing from config.harnesses is skipped with a warning.
+ */
+export function selectHarnesses(
+  config: ResolvedYokeConfig,
+  requested: readonly string[] | undefined,
+  factories: ReadonlyMap<string, AdapterFactory>,
+): { readonly names: readonly string[]; readonly warnings: readonly string[] } {
+  const warnings: string[] = [];
+  const names: string[] = [];
+  const wanted = requested === undefined ? undefined : new Set(requested);
+  for (const name of config.harnesses) {
+    if (wanted !== undefined && !wanted.has(name)) continue;
+    if (!factories.has(name)) {
+      warnings.push(`harness "${name}" has no adapter in this version of yoke; skipped`);
+      continue;
+    }
+    names.push(name);
+  }
+  for (const name of requested ?? []) {
+    if (!config.harnesses.includes(name)) {
+      warnings.push(`harness "${name}" is not listed in harnesses; skipped`);
+    }
+  }
+  return { names, warnings };
+}
+// #endregion P4 request and config
