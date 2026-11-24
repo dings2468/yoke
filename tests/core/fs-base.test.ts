@@ -4,6 +4,8 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   atomicWrite,
+  backupRelativePath,
+  createBackupSession,
   createNodeFs,
   FsSafeError,
   isNotFound,
@@ -98,6 +100,46 @@ describe("atomicWrite", () => {
     const renameOrder = renameSpy.mock.invocationCallOrder[0] ?? Number.NaN;
     expect(writeOrder).toBeLessThan(chmodOrder);
     expect(chmodOrder).toBeLessThan(renameOrder);
+  });
+
+  it("replaces a symlink with a regular file when followSymlinks is false", async () => {
+    const fs = createNodeFs();
+    const real = join(dir, "store.md");
+    const link = join(dir, "AGENTS.md");
+    await writeFile(real, "store content");
+    await symlink("store.md", link);
+    const backup = createBackupSession({
+      fs,
+      root: join(dir, "backups"),
+      now: () => new Date("2026-11-24T10:00:00.123Z"),
+    });
+
+    const result = await atomicWrite(fs, link, "new content", { followSymlinks: false, backup });
+
+    expect(result.writtenPath).toBe(link);
+    const st = await fs.lstat(link);
+    expect(st.isSymbolicLink).toBe(false);
+    expect(st.isFile).toBe(true);
+    expect(await readFile(link, "utf8")).toBe("new content");
+    expect(await readFile(real, "utf8")).toBe("store content");
+    expect((await readdir(dir)).filter((name) => name.endsWith(".yoke.tmp"))).toEqual([]);
+    const backedUp = join(backup.dir() as string, backupRelativePath(link));
+    expect(await readFile(backedUp, "utf8")).toBe("store.md\n");
+  });
+
+  it("does not delete a foreign file that already sits at the temp path", async () => {
+    const fs = createNodeFs();
+    const target = join(dir, "keep.json");
+    await writeFile(target, "original");
+    const foreignTmp = join(dir, "keep.json.fixed.yoke.tmp");
+    await writeFile(foreignTmp, "foreign");
+
+    await expect(
+      atomicWrite(fs, target, "new", { tmpSuffix: () => "fixed" }),
+    ).rejects.toMatchObject({ code: "EEXIST" });
+
+    expect(await readFile(foreignTmp, "utf8")).toBe("foreign");
+    expect(await readFile(target, "utf8")).toBe("original");
   });
 });
 
