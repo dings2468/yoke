@@ -91,7 +91,7 @@ describe("readJsonIfExists", () => {
 
 describe("dry-run parity", () => {
   it("planning records zero write calls and matches the plan of a real run", async () => {
-    const path = join(dir, ".claude.json");
+    const path = join(dir, "app.json");
     await writeFile(path, await fixture("claude-like.json"));
     const textPath = join(dir, "CLAUDE.md");
     await writeFile(textPath, "old\n");
@@ -122,7 +122,7 @@ describe("dry-run parity", () => {
 
 describe("commitJsonPatch zero-clobber", () => {
   it("changes only mcpServers and keeps the original bytes in the backup", async () => {
-    const path = join(dir, ".claude.json");
+    const path = join(dir, "app.json");
     const original = await fixture("claude-like.json");
     await writeFile(path, original);
 
@@ -140,7 +140,7 @@ describe("commitJsonPatch zero-clobber", () => {
 
 describe("commitJsonPatch rebase (D7)", () => {
   it("re-patches the key on the current text when the file changed after planning", async () => {
-    const path = join(dir, ".claude.json");
+    const path = join(dir, "app.json");
     await writeFile(path, await fixture("claude-like.json"));
 
     const plan = await planJsonPatch(fs, path, ["mcpServers"], NEW_SERVERS);
@@ -159,7 +159,7 @@ describe("commitJsonPatch rebase (D7)", () => {
   });
 
   it("writes nothing when the rebased key already holds the value", async () => {
-    const path = join(dir, ".claude.json");
+    const path = join(dir, "app.json");
     await writeFile(path, await fixture("claude-like.json"));
 
     const plan = await planJsonPatch(fs, path, ["mcpServers"], NEW_SERVERS);
@@ -176,7 +176,7 @@ describe("commitJsonPatch rebase (D7)", () => {
 
 describe("commitJsonPatch noop and create", () => {
   it("a noop plan writes nothing and creates no backup", async () => {
-    const path = join(dir, ".claude.json");
+    const path = join(dir, "app.json");
     await writeFile(path, await fixture("claude-like.json"));
 
     const plan = await planJsonPatch(fs, path, ["numStartups"], 3);
@@ -193,7 +193,7 @@ describe("commitJsonPatch noop and create", () => {
   });
 
   it("creates a missing file with no backup", async () => {
-    const path = join(dir, "new", ".claude.json");
+    const path = join(dir, "new", "app.json");
     const plan = await planJsonPatch(fs, path, ["mcpServers"], NEW_SERVERS);
     expect(plan.before).toBeUndefined();
     expect(plan.strategy).toBe("create");
