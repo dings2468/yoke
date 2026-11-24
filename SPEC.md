@@ -65,7 +65,10 @@ When the same MCP server name appears in more than one scope, entries are merged
 * **A change of `transport`** replaces the whole server entry; no fields are inherited from the lower scope.
 * **`enabled: false` with no `transport`** is not a transport change. It is a stub that suppresses the inherited entry.
 
-**Open item:** YAML `null` semantics (for example, `env: { KEY: null }` or `headers: null` to remove an inherited field) are undecided.
+* **Full definitions only:** every non-stub entry must be a complete definition with a `transport`. Partial overrides of a lower-scope server (for example, only `env` in `yoke.local.yaml`) are not valid; use a full entry, which follows the transport-change or field-merge rules above.
+* **YAML `null` is rejected** everywhere in v0.1 (`env: { KEY: null }`, `headers: null`, and so on).
+
+**Open item:** whether `null` should later remove an inherited field is undecided.
 
 ---
 
@@ -109,6 +112,17 @@ session:
   includeGitDiffStat: true
 ```
 
+**Defaults (applied after merge, not in the scope files):** `mode: compiled`, `harnesses: []`, `instructions.source: AGENTS.md`, `instructions.preferSymlink: true`, `session.maxTurns: 40`, `session.includeGitDiffStat: true`.
+
+**Schema rules** (`src/core/schema.ts`):
+* **Strict objects:** unknown keys are rejected in every file and nested object (this catches typos such as `mcpServers:`). An older `yoke` therefore rejects files written by a newer one.
+* **`version: 1` is required** in every scope file, including `yoke.local.yaml`. All other top-level keys are optional.
+* **Strings only:** `env` and `headers` values must be YAML strings (`PORT: "8080"`); numbers and booleans are not coerced. `env` keys match `^[A-Za-z_][A-Za-z0-9_]*$`.
+* **URLs** must start with `http://`, `https://`, or a `${VAR}` reference, so `${MCP_HOST}/mcp` is valid.
+* **Names:** harness names match `^[a-z][a-z0-9-]{0,31}$` (no `:`, because they form the state key); MCP server names match `^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$`. `harnesses` must not contain duplicates.
+* **`instructions.source`** is relative to the directory of the yaml file that declares it.
+* **`session.maxTurns`** is a positive integer with no upper bound.
+
 ### 4.2 Conditional Instruction Blocks (`AGENTS.md`)
 The instruction compiler supports optional harness-scoped blocks:
 
@@ -133,14 +147,18 @@ export interface YokeStateLock {
   version: 1;
   lastSyncedAt: string;
   harnesses: Record<
-    string,
+    string, // "<harness>:<scope>", e.g. "claude:project"
     {
       mcpHashes: Record<string, string>; // serverName -> sha256 of canonical MCP definition
-      instructionsHash: string;          // sha256 of last-written instruction file
+      instructionsHash: string | null;   // sha256 of last-written instruction target; null if yoke wrote none
     }
   >;
 }
 ```
+
+* **Keys** are `"<harness>:<scope>"` (scope is `user`, `project`, or `local`). The field keeps the name `harnesses`.
+* **Hashes** are lowercase hex sha256 with no `sha256:` prefix (64 characters). Hashed input is the sorted-key canonical JSON of the value: keys sorted recursively, array order kept, no whitespace, `undefined`-valued keys omitted, UTF-8. `lastSyncedAt` is an ISO-8601 date-time.
+* **Symlinked instructions:** the instruction target is hashed as `{kind:"symlink",target}` for a symlink and `{kind:"file",content}` for a file, so editing `AGENTS.md` behind a `CLAUDE.md` symlink is not drift. This is applied by `src/core/drift.ts`; `schema.ts` only models the native shape (§6).
 
 ### 4.4 Mediator Session IR (`.yoke/sessions/<id>.json`, gitignored)
 
@@ -168,6 +186,8 @@ export interface YokeSessionIR {
   }>;
 }
 ```
+
+**Schema limits:** `id` matches `^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$` (it becomes a file name); `sourceHarness` is a harness name; `repoPath` is non-empty but not checked for being absolute; `branch` may be empty (detached or unborn HEAD); `turns` may be empty. Each `actions[].summary` is 1 to 300 characters and single-line. `content` has no length cap (the exporter enforces invariant 6). Objects are strict, so keys such as `thinking` or `signature` are rejected. Timestamps are ISO-8601 date-times.
 
 **Session Translation Rules:**
 * **Strip:** Cryptographic thinking/thought signatures, raw multi-hundred-line file reads, and verbose terminal logs.
@@ -250,6 +270,50 @@ export interface HarnessAdapter {
   importAndLaunch?(session: YokeSessionIR, opts: LaunchOptions): Promise<void>;
 }
 ```
+
+### Adapter Types (`src/core/schema.ts`)
+
+The types below are defined in `src/core/schema.ts` and imported by adapters and commands.
+
+```typescript
+// Result of readNativeState: one entry per native tier the adapter exposes and read.
+// An absent key means "not supported or not read"; `mcps: {}` means "read, empty".
+interface PartialYokeConfig {
+  user?: NativeScopeState;
+  project?: NativeScopeState;
+  local?: NativeScopeState;
+}
+interface NativeScopeState {
+  mcps: Record<string, McpServerDefinition>; // disabled native entry => full definition with enabled: false
+  instructions?:
+    | { kind: "file"; path: string; content: string }
+    | { kind: "symlink"; path: string; target: string };
+}
+
+// Merged effective config (local > project > user), defaults applied.
+interface ResolvedYokeConfig {
+  version: 1;
+  mode: "compiled" | "hybrid";
+  harnesses: string[];
+  mcps: Record<string, McpServerDefinition & { enabled: boolean; scopes: Scope[] }>;
+  instructions: { source: string; preferSymlink: boolean };
+  session: { maxTurns: number; includeGitDiffStat: boolean };
+  layers: { user?: YokeConfig; project?: YokeConfig; local?: YokeConfig }; // validated per-scope inputs
+}
+
+interface SyncOptions {
+  readonly repoPath: string;          // absolute repo root
+  readonly scopes: readonly Scope[];  // `sync` -> project, local; `--global` -> user; `--all` -> all three
+  readonly warn: (message: string) => void;
+}
+
+interface LaunchOptions {
+  readonly repoPath: string;  // absolute repo root
+  readonly launch: boolean;   // false for --no-launch
+}
+```
+
+`ResolvedMcpServer.scopes` lists contributing scopes in ascending precedence. A stub with nothing beneath it is dropped by the merge. `SyncOptions` and `LaunchOptions` are plain TypeScript interfaces, not Zod schemas, and live in `schema.ts` so core and commands share one types module.
 
 ### Target Capability Matrix
 
