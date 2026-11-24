@@ -1,4 +1,3 @@
-```markdown
 # AGENTS.md — `yoke` Development Guide
 
 Read `SPEC.md` before making architectural changes. `SPEC.md` is the source of truth for schemas, adapter contracts, and CLI behavior.
@@ -13,15 +12,15 @@ Read `SPEC.md` before making architectural changes. `SPEC.md` is the source of t
   ```
 
 ## Architecture Rules
-1. **Strict Adapter Isolation:** Harness-specific paths, JSON keys (`type: "http"` vs. `httpUrl`), and session parsers belong **exclusively** inside `src/adapters/<harness>.ts`. Never branch on harness names (`if (name === "claude")`) inside `src/core/` or `src/commands/`.
-2. **Capability-Driven Core:** Every adapter must implement `HarnessAdapter` and declare `HarnessCapabilities` (`src/adapters/base.ts`). Commands must check capabilities before invoking optional methods (`exportLatestSession`, `importAndLaunch`) and degrade gracefully.
+1. **Strict Adapter Isolation:** Harness-specific paths, JSON keys (Claude `type: "http"` + `url` vs. agy `url` only, where `serverUrl` is accepted as a legacy alias on read), and session parsers belong **exclusively** inside `src/adapters/<harness>.ts`. Never branch on harness names (`if (name === "claude")`) inside `src/core/` or `src/commands/`.
+2. **Capability-Driven Core:** Every adapter must implement `HarnessAdapter` and declare `HarnessCapabilities` (`src/adapters/base.ts`). Commands must check capabilities before invoking optional methods (`exportLatestSession`, `importAndLaunch`) and degrade gracefully. Note: agy does not support legacy HTTP+SSE, so `transport: sse` servers are skipped for agy with a warning. agy also has no v0.1 project-level MCP config, so project and local MCP servers are skipped for agy with a warning and never written to the global file.
 3. **3-Tier Scope Precedence:** Always resolve configuration in strict order: `local` > `project` > `user`. Respect `enabled: false` to disable inherited `user`-level MCP servers.
 4. **Canonical Validation:** Validate all external inputs (`yoke.yaml`, `yoke.local.yaml`, `.yoke/state.json`, `YokeSessionIR`) through Zod schemas in `src/core/schema.ts`.
 
 ## Non-Negotiable Safety Invariants
 Violating any of these is a blocking bug:
 1. **Zero-Clobber JSON Patching:** Never overwrite `~/.claude.json` or any shared harness config wholesale. Use `src/core/fs-safe.ts` to read, parse, patch *only* the target key (e.g., `mcpServers`), and write atomically (`.tmp` + `rename`).
-2. **Automatic Backups:** Before modifying any existing file not already managed by `yoke`, copy it to `~/.config/yoke/backups/<timestamp>/`.
+2. **Automatic Backups:** Always back up. Before `yoke` overwrites or patches any file, copy the original to `~/.config/yoke/backups/<timestamp>/`. This includes yoke-managed files when drift is detected and the user chooses overwrite, and JSON-patched shared files (`~/.claude.json`, agy `mcp_config.json`). A file is "yoke-managed" if it carries the `GENERATED` header or is a symlink yoke created.
 3. **Dry-Run Parity:** `syncStatic()` must return `FileChangePlan[]` without performing disk writes. `--dry-run` must execute the exact same planning pipeline and simply skip calling `apply()`.
 4. **No Secret Leakage:** Never resolve or expand `${ENV_VAR}` values into plaintext in generated project files. Preserve variable references in the target harness's native syntax.
 5. **No Silent Overwrites:** Before overwriting a native harness file, diff against `.yoke/state.json` via `src/core/drift.ts`. If native drift is detected, prompt the user (or fail in non-interactive mode unless `--force` is passed).
@@ -36,4 +35,3 @@ Violating any of these is a blocking bug:
   - 3-way drift detection (`yoke.yaml` vs. `.yoke/state.json` vs. native file).
   - Conditional block compilation (`<!-- yoke:claude-only -->` / `<!-- yoke:agy-only -->`) vs. symlink fallback.
 
-```
