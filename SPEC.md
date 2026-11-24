@@ -374,6 +374,18 @@ Planning receives a read-only filesystem; each `apply` closure holds the writabl
 | `yoke sessions` | Lists saved `YokeSessionIR` snapshots in `.yoke/sessions/` for resuming in any harness. |
 | `yoke doctor` | Verifies CLI binaries, auth status (`claude --version`, `agy models` *(unverified)*), broken symlinks, and config drift. |
 
+### Exit codes
+
+| Code | Meaning | Returned by |
+| :--- | :--- | :--- |
+| `0` | Success, nothing to do, or a clean check. `--help` and `--version` also exit `0`. | all commands |
+| `1` | Failure: `doctor` found at least one problem, or the command failed at runtime (invalid `yoke.yaml`, unreadable native state, plan conflict, apply failure, import error). | `sync`, `init`, `doctor`, `switch` |
+| `2` | Usage error: unknown option, bad or missing argument, or an interactive prompt required without a terminal. | all commands |
+| `3` | Drift refusal: native changes detected and the run was non-interactive without `--force`, or the user chose "Abort". A blocked dry run also returns `3`. | `sync`, `switch` |
+| `130` | Interrupted: the user cancelled a prompt or sent SIGINT before anything was written. | `init`, `sync`, `switch` |
+
+`yoke sessions` is not yet available; when added it returns only `0`, `1`, and `2`. `--dry-run` returns the same code a real run would, so `yoke sync --dry-run` can be used as a CI drift check.
+
 ---
 
 ## 8. Non-Negotiable Safety Invariants
