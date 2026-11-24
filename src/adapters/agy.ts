@@ -8,7 +8,9 @@
  * - agy has no SSE transport. SSE servers are never translated here.
  */
 import { join } from "node:path";
-import { readJsonIfExists } from "../core/fs-safe.js";
+import { localOverridePath } from "../core/compiler.js";
+import { readJsonIfExists, readTextIfExists, toReadFs } from "../core/fs-safe.js";
+import type { ExecResult } from "../core/git.js";
 import {
   getAtPath,
   isJsonObject,
@@ -33,10 +35,15 @@ import {
   type DesiredEntry,
   definedNames,
   type FileChangePlan,
+  type HarnessAdapter,
+  type HarnessCapabilities,
+  type HarnessStatus,
+  instructionSources,
   layerView,
   mergeServerEntries,
   type NativeEntry,
   NativeStateError,
+  planInstructionTarget,
   planJsonKeyPatch,
   readFileSnapshot,
   stubNames,
@@ -382,3 +389,126 @@ export async function planAgyMcp(
 }
 
 // #endregion AG2 mcp
+
+// #region AG3 sync
+
+/** Capabilities of the agy adapter in v0.1 (decision D11). */
+export const AGY_CAPABILITIES: HarnessCapabilities = {
+  staticMcp: true,
+  staticInstructions: true,
+  reverseRead: true,
+  sessionExport: false,
+  sessionImport: "handoff-file-only",
+};
+
+/**
+ * Plans the agy instruction files. The user scope links or compiles `<home>/.gemini/GEMINI.md`. The project scope
+ * does the same for `<repo>/GEMINI.md`. The GEMINI.md locations are UNVERIFIED (SPEC §6). Hybrid mode cannot isolate
+ * the local override, so it is not applied and the project plan carries a warning.
+ */
+async function planAgyInstructions(
+  ctx: AdapterContext,
+  config: ResolvedYokeConfig,
+  opts: SyncOptions,
+): Promise<FileChangePlan[]> {
+  const paths = agyPaths(ctx.homeDir, opts.repoPath);
+  const sources = instructionSources(config, {
+    repoPath: opts.repoPath,
+    userConfigDir: ctx.userConfigDir,
+  });
+  const plans: FileChangePlan[] = [];
+
+  if (opts.scopes.includes("user")) {
+    const plan = await planInstructionTarget(ctx, {
+      target: AGY_NAME,
+      validTargets: config.harnesses,
+      scope: "user",
+      linkPath: paths.userInstructions,
+      sourcePath: sources.user,
+      localPath: undefined,
+      preferSymlink: config.instructions.preferSymlink,
+      warnings: [],
+    });
+    if (plan !== undefined) {
+      plans.push(plan);
+    }
+  }
+
+  if (opts.scopes.includes("project")) {
+    const localPath = localOverridePath(sources.project);
+    const compiled = config.mode === "compiled";
+    const hasLocal = (await readTextIfExists(ctx.fs, localPath)) !== undefined;
+    const warnings =
+      !compiled && hasLocal
+        ? [`agy: ${localPath} cannot be isolated in hybrid mode; not applied`]
+        : [];
+    const plan = await planInstructionTarget(ctx, {
+      target: AGY_NAME,
+      validTargets: config.harnesses,
+      scope: "project",
+      linkPath: paths.projectInstructions,
+      sourcePath: sources.project,
+      localPath: compiled ? localPath : undefined,
+      preferSymlink: config.instructions.preferSymlink,
+      warnings,
+    });
+    if (plan !== undefined) {
+      plans.push(plan);
+    }
+  }
+
+  return plans;
+}
+
+/**
+ * Plans every agy change for a sync: the MCP config first, then the instruction files. Reads only. The caller applies
+ * each returned plan. No plan writes to the global MCP file for project or local servers.
+ */
+export async function planAgySync(
+  ctx: AdapterContext,
+  config: ResolvedYokeConfig,
+  opts: SyncOptions,
+): Promise<FileChangePlan[]> {
+  const mcp = await planAgyMcp(ctx, config, opts);
+  const instructions = await planAgyInstructions(ctx, config, opts);
+  return [...mcp, ...instructions];
+}
+
+/**
+ * Detects the agy binary. Runs `agy --version` only, and writes nothing. `authenticated` is always false in v0.1:
+ * the probe that would prove it (`agy models`, SPEC §7) is unverified and may reach the network.
+ */
+export async function detectAgy(ctx: AdapterContext): Promise<HarnessStatus> {
+  let result: ExecResult;
+  try {
+    result = await ctx.exec("agy", ["--version"], { cwd: ctx.homeDir });
+  } catch {
+    return { installed: false, authenticated: false };
+  }
+  if (result.exitCode !== 0) {
+    return { installed: false, authenticated: false };
+  }
+  const version = /\d+\.\d+\.\d+/.exec(result.stdout)?.[0];
+  return {
+    installed: true,
+    authenticated: false,
+    ...(version === undefined ? {} : { version }),
+  };
+}
+
+/**
+ * Builds the agy HarnessAdapter. The filesystem is wrapped with toReadFs, so every planning call is read-only. Only the
+ * apply closures of the returned plans write, and they use the ApplyContext the caller supplies.
+ */
+export function createAgyAdapter(ctx: AdapterContext): HarnessAdapter {
+  const readOnly: AdapterContext = { ...ctx, fs: toReadFs(ctx.fs) };
+  return {
+    name: AGY_NAME,
+    capabilities: AGY_CAPABILITIES,
+    detect: () => detectAgy(readOnly),
+    readNativeState: (repoPath) => readAgyNativeState(readOnly, repoPath),
+    syncStatic: (config, opts) => planAgySync(readOnly, config, opts),
+  };
+}
+
+// #endregion AG3 sync
