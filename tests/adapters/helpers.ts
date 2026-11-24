@@ -8,8 +8,15 @@ import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promi
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { AdapterContext, ApplyContext } from "../../src/adapters/base.js";
+import { createBackupSession, createNodeFs, toReadFs } from "../../src/core/fs-safe.js";
 import type { Exec, ExecResult } from "../../src/core/git.js";
-import type { ResolvedYokeConfig } from "../../src/core/schema.js";
+import {
+  type ResolvedYokeConfig,
+  type StateEntry,
+  type YokeStateLock,
+  YokeStateLockSchema,
+} from "../../src/core/schema.js";
 import { loadScopeInputs, resolveConfig } from "../../src/core/scopes.js";
 
 export const ADAPTER_FIXTURES = fileURLToPath(new URL("../fixtures/adapters/", import.meta.url));
@@ -126,3 +133,41 @@ export async function loadFixtureConfig(
   const inputs = await loadScopeInputs(readText, paths);
   return resolveConfig(inputs, { projectDir: sb.repo, warn: () => {} });
 }
+
+// #region BA1 contract helpers
+
+/** Adapter context whose paths all live in the sandbox. `exec` is an empty fakeExec unless overridden. */
+export function makeAdapterContext(sb: Sandbox, over?: Partial<AdapterContext>): AdapterContext {
+  return {
+    homeDir: sb.home,
+    userConfigDir: sb.userConfigDir,
+    fs: toReadFs(createNodeFs()),
+    exec: fakeExec(new Map()),
+    env: {},
+    ...over,
+  };
+}
+
+/** Apply context with a real writable fs and a backup session rooted in the sandbox at a fixed clock. */
+export function makeApplyContext(sb: Sandbox): ApplyContext {
+  const fs = createNodeFs();
+  return {
+    fs,
+    backup: createBackupSession({
+      fs,
+      root: sb.backupsRoot,
+      now: () => new Date("2026-11-24T10:00:00.000Z"),
+    }),
+  };
+}
+
+/** A parsed `.yoke/state.json` lock with a fixed `lastSyncedAt`. Entries are keyed by `<harness>:<scope>`. */
+export function lockFrom(entries: Readonly<Record<string, StateEntry>>): YokeStateLock {
+  return YokeStateLockSchema.parse({
+    version: 1,
+    lastSyncedAt: "2026-11-24T10:00:00.000Z",
+    harnesses: entries,
+  });
+}
+
+// #endregion BA1 contract helpers
