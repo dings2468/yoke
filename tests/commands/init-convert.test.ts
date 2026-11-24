@@ -176,7 +176,7 @@ describe("buildInitDraft", () => {
     expect(draft.project.harnesses).toEqual(["alpha", "beta", "gamma"]);
   });
 
-  it("notes user-scope servers left in place", () => {
+  it("builds a user draft and no longer notes servers left in place", () => {
     const draft = buildInitDraft({
       selection: selection([
         harness("alpha", {
@@ -190,7 +190,57 @@ describe("buildInitDraft", () => {
       installed: [],
       secrets: "local",
     });
-    expect(draft.notes).toContain("3 user-scope servers left in place");
+    expect(draft.notes.some((n) => n.includes("left in place"))).toBe(false);
+    expect(Object.keys(draft.user?.mcps ?? {})).toEqual(["a1", "a2", "b1"]);
+    expect(draft.user?.harnesses).toEqual(["alpha", "beta"]);
+  });
+
+  it("leaves out user servers already in project or local, with a note", () => {
+    const draft = buildInitDraft({
+      selection: selection([
+        harness("alpha", {
+          project: { shared: { transport: "stdio", command: "s" } },
+          user: {
+            shared: { transport: "stdio", command: "s" },
+            only: { transport: "stdio", command: "o" },
+          },
+        }),
+      ]),
+      installed: [],
+      secrets: "local",
+    });
+    expect(Object.keys(draft.user?.mcps ?? {})).toEqual(["only"]);
+    expect(draft.notes).toContain(
+      'user server "shared" also defined in project/local; not added to the user file',
+    );
+  });
+
+  it("keeps user literal secrets under local and references them under ref", () => {
+    const input = {
+      selection: selection([
+        harness("alpha", {
+          user: {
+            u1: {
+              transport: "http",
+              url: "https://x.example",
+              headers: { Authorization: `Bearer ${SECRET}` },
+            },
+          },
+        }),
+      ]),
+      installed: [],
+    };
+    const local = buildInitDraft({ ...input, secrets: "local" });
+    expect(JSON.stringify(local.user?.mcps)).toContain(SECRET);
+    expect(local.envVars).toEqual([]);
+
+    const ref = buildInitDraft({ ...input, secrets: "ref" });
+    expect(JSON.stringify(ref.user?.mcps)).not.toContain(SECRET);
+    expect(JSON.stringify(ref.user?.mcps)).toContain("${");
+    expect(ref.envVars.length).toBeGreaterThan(0);
+    expect(ref.notes.some((n) => n.startsWith("export these variables before running sync"))).toBe(
+      true,
+    );
   });
 
   it("uses the chosen instruction file as agents content", () => {

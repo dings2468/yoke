@@ -25,6 +25,13 @@ export type SecretPolicy = "local" | "ref";
 export interface InitDraft {
   readonly project: YokeConfig;
   readonly local: YokeConfig | undefined;
+  /** Native user-tier servers not already in project or local, for the user-scope file (U2). */
+  readonly user:
+    | {
+        readonly mcps: Readonly<Record<string, McpServerDefinition>>;
+        readonly harnesses: readonly string[];
+      }
+    | undefined;
   readonly agents: { readonly content: string; readonly from: string } | undefined;
   readonly envVars: readonly SecretFinding[];
   readonly notes: readonly string[];
@@ -41,12 +48,13 @@ interface Claim {
 
 /** Merges one tier across harnesses. Identical definitions collapse; different ones fail (DI8). */
 function mergeTier(
-  tier: "project" | "local",
+  tier: "project" | "local" | "user",
   harnesses: readonly HarnessImport[],
 ): Record<string, McpServerDefinition> {
   const claimed = new Map<string, Claim>();
   for (const harness of harnesses) {
-    const servers = tier === "project" ? harness.project : harness.local;
+    const servers =
+      tier === "project" ? harness.project : tier === "local" ? harness.local : harness.user;
     for (const [name, def] of Object.entries(servers)) {
       const prior = claimed.get(name);
       if (prior === undefined) {
@@ -62,8 +70,9 @@ function mergeTier(
 }
 
 /**
- * Builds the drafts for yoke.yaml and yoke.local.yaml (DI2, DI7, DI8, DI10). Literal secrets in the project tier
- * become `${VAR}` references; `local` keeps their full originals in the local draft.
+ * Builds the drafts for yoke.yaml, yoke.local.yaml, and the user-scope draft (DI2, DI7, DI8, DI10, U2, U3).
+ * Literal secrets in the project tier become `${VAR}` references; `local` keeps their full originals in the local
+ * draft. User-tier servers keep literal values under `local` and become references under `ref`.
  */
 export function buildInitDraft(input: {
   readonly selection: ImportSelection;
@@ -73,6 +82,7 @@ export function buildInitDraft(input: {
   const { selection, installed, secrets } = input;
   const projectNative = mergeTier("project", selection.harnesses);
   const localMap: Record<string, McpServerDefinition> = mergeTier("local", selection.harnesses);
+  const projectOrLocalNames = new Set([...Object.keys(projectNative), ...Object.keys(localMap)]);
   const redacted = redactSecrets(projectNative);
 
   if (secrets === "local") {
@@ -86,6 +96,15 @@ export function buildInitDraft(input: {
       localMap[name] = def;
     }
   }
+
+  const notes: string[] = [];
+  const user = buildUserDraft({
+    selection,
+    projectOrLocalNames,
+    secrets,
+    takenVarNames: new Set(redacted.findings.map((f) => f.varName)),
+    notes,
+  });
 
   const harnessNames = [
     ...new Set([...installed, ...selection.harnesses.map((h) => h.harness)]),
@@ -110,24 +129,76 @@ export function buildInitDraft(input: {
       ? undefined
       : { content: instructions.content, from: instructions.path };
 
-  const notes: string[] = [];
-  const userTotal = selection.harnesses.reduce((sum, h) => sum + Object.keys(h.user).length, 0);
-  if (userTotal > 0) {
-    notes.push(`${userTotal} user-scope servers left in place`);
-  }
-  const findingCount = redacted.findings.length;
-  if (findingCount > 0) {
-    if (secrets === "local") {
+  const envVars = [...redacted.findings, ...(user?.findings ?? [])];
+  if (secrets === "local") {
+    if (redacted.findings.length > 0) {
       notes.push(
-        `${findingCount} literal secret value(s) replaced by \${VAR} references; full definitions kept in yoke.local.yaml`,
+        `${redacted.findings.length} literal secret value(s) replaced by \${VAR} references; full definitions kept in yoke.local.yaml`,
       );
-    } else {
-      const names = [...new Set(redacted.findings.map((f) => f.varName))].join(", ");
-      notes.push(`export these variables before running sync: ${names}`);
     }
+  } else if (envVars.length > 0) {
+    const names = [...new Set(envVars.map((f) => f.varName))].join(", ");
+    notes.push(`export these variables before running sync: ${names}`);
   }
 
-  return { project, local, agents, envVars: redacted.findings, notes };
+  return {
+    project,
+    local,
+    user: user === undefined ? undefined : { mcps: user.mcps, harnesses: user.harnesses },
+    agents,
+    envVars,
+    notes,
+  };
+}
+
+/**
+ * The user-scope draft (U2, U3). Names already in the project or local draft are left out, with a note. Under
+ * `ref`, literal secrets become references; the findings are returned so the caller can list them.
+ */
+function buildUserDraft(input: {
+  readonly selection: ImportSelection;
+  readonly projectOrLocalNames: ReadonlySet<string>;
+  readonly secrets: SecretPolicy;
+  readonly takenVarNames: ReadonlySet<string>;
+  readonly notes: string[];
+}):
+  | {
+      readonly mcps: Record<string, McpServerDefinition>;
+      readonly harnesses: string[];
+      readonly findings: SecretFinding[];
+    }
+  | undefined {
+  const { selection, projectOrLocalNames, secrets, takenVarNames, notes } = input;
+  const merged = mergeTier("user", selection.harnesses);
+  const mcps: Record<string, McpServerDefinition> = {};
+  for (const name of Object.keys(merged).sort()) {
+    const def = merged[name];
+    if (def === undefined) {
+      continue;
+    }
+    if (projectOrLocalNames.has(name)) {
+      notes.push(`user server "${name}" also defined in project/local; not added to the user file`);
+      continue;
+    }
+    mcps[name] = def;
+  }
+  if (Object.keys(mcps).length === 0) {
+    return undefined;
+  }
+  const harnesses = selection.harnesses
+    .filter((h) => Object.keys(h.user).some((name) => Object.hasOwn(mcps, name)))
+    .map((h) => h.harness);
+  const uniqueHarnesses = [...new Set(harnesses)].sort();
+
+  if (secrets === "local") {
+    return { mcps, harnesses: uniqueHarnesses, findings: [] };
+  }
+  const redacted = redactSecrets(mcps, takenVarNames);
+  return {
+    mcps: { ...redacted.safe },
+    harnesses: uniqueHarnesses,
+    findings: [...redacted.findings],
+  };
 }
 
 /** Serializes a config as yoke.yaml text. `${VAR}` references are written verbatim. */
