@@ -21,6 +21,7 @@ describe("MCP server entry schemas", () => {
     expect(Object.keys(parsed)).toEqual(["filesystem", "linear", "github", "docs", "scratch"]);
   });
 
+  // biome-ignore lint/suspicious/noTemplateCurlyInString: test title documents literal ${VAR} syntax
   it("keeps ${VAR} header references byte-for-byte", () => {
     const parsed = McpServersSchema.parse(readFixture("valid.json"));
     const linear = parsed.linear;
@@ -48,6 +49,7 @@ describe("MCP server entry schemas", () => {
     expect(McpServersSchema.safeParse(readFixture(file)).success).toBe(false);
   });
 
+  // biome-ignore lint/suspicious/noTemplateCurlyInString: test title documents literal ${VAR} syntax
   it("accepts https URLs and ${VAR} prefixed URLs, and rejects others", () => {
     expect(RemoteUrlSchema.safeParse("https://mcp.linear.app/mcp").success).toBe(true);
     expect(RemoteUrlSchema.safeParse(`\${MCP_URL}/mcp`).success).toBe(true);
