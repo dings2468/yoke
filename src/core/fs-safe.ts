@@ -139,11 +139,22 @@ export interface AtomicWriteOptions {
   readonly mode?: number;
   /** Returns the random part of the temp file name. Defaults to 8 random hex chars. */
   readonly tmpSuffix?: () => string;
+  /**
+   * Defaults to true: a symlink at `path` is kept and its real target is written.
+   * When false, a symlink at `path` is replaced by a regular file (SPEC §8.2).
+   */
+  readonly followSymlinks?: boolean;
+  /**
+   * Used only when `followSymlinks` is false and `path` is a link. The link is recorded in this session
+   * as a text file (kind "link-text") before it is replaced. Without a session nothing is backed up.
+   */
+  readonly backup?: BackupSession;
 }
 
 /**
  * Writes `content` to `path` via a temp file in the same directory followed by `rename` (D6).
- * A symlink at `path` is kept: the write goes to its real target. A dangling symlink throws FsSafeError.
+ * By default a symlink at `path` is kept: the write goes to its real target. A dangling symlink throws FsSafeError.
+ * With `followSymlinks: false` the temp file is created beside the link and `rename` replaces the link itself.
  */
 export async function atomicWrite(
   fs: Fs,
@@ -151,6 +162,7 @@ export async function atomicWrite(
   content: string,
   opts: AtomicWriteOptions = {},
 ): Promise<{ readonly writtenPath: string }> {
+  const followSymlinks = opts.followSymlinks ?? true;
   let writtenPath = path;
   let existingMode: number | undefined;
 
@@ -160,7 +172,8 @@ export async function atomicWrite(
   } catch (err: unknown) {
     if (!isNotFound(err)) throw err;
   }
-  if (lst?.isSymbolicLink) {
+  const replacingLink = lst?.isSymbolicLink === true && !followSymlinks;
+  if (lst?.isSymbolicLink && followSymlinks) {
     try {
       writtenPath = await fs.realpath(path);
     } catch (err: unknown) {
@@ -168,23 +181,39 @@ export async function atomicWrite(
     }
   }
   if (lst !== undefined) {
-    existingMode = (await fs.stat(writtenPath)).mode;
+    try {
+      existingMode = (await fs.stat(writtenPath)).mode;
+    } catch (err: unknown) {
+      // A dangling link being replaced has no target mode to inherit.
+      if (!(replacingLink && isNotFound(err))) throw err;
+    }
   }
 
   const mode = opts.mode ?? existingMode;
   await fs.mkdir(dirname(writtenPath), { recursive: true });
+  if (replacingLink && opts.backup !== undefined) {
+    await opts.backup.backup(path, { kind: "link-text" });
+  }
 
   const suffix = opts.tmpSuffix ? opts.tmpSuffix() : randomBytes(4).toString("hex");
   const tmp = join(dirname(writtenPath), `${basename(writtenPath)}.${suffix}.yoke.tmp`);
 
+  // Only remove the temp file when this call created it. A foreign file at the same name is left alone.
+  let created = false;
   try {
-    await fs.writeFile(tmp, content, { flag: "wx", mode });
+    try {
+      await fs.writeFile(tmp, content, { flag: "wx", mode });
+    } catch (err: unknown) {
+      if (errorCode(err) !== "EEXIST") created = true;
+      throw err;
+    }
+    created = true;
     if (mode !== undefined) {
       await fs.chmod(tmp, mode);
     }
     await fs.rename(tmp, writtenPath);
   } catch (err: unknown) {
-    await fs.unlink(tmp).catch(() => {});
+    if (created) await fs.unlink(tmp).catch(() => {});
     throw err;
   }
 
@@ -201,8 +230,15 @@ export interface BackupOptions {
 }
 
 export interface BackupSession {
-  /** Copies the current file (content, following links) or the link itself (kind "link"). Returns the backup path, or undefined if the source is missing. */
-  backup(path: string, opts?: { readonly kind?: "content" | "link" }): Promise<string | undefined>;
+  /**
+   * Copies the current file (content, following links), or the link itself (kind "link", stored as a symlink),
+   * or the link's target text (kind "link-text", stored as a text file named after the link).
+   * Returns the backup path, or undefined if the source is missing.
+   */
+  backup(
+    path: string,
+    opts?: { readonly kind?: "content" | "link" | "link-text" },
+  ): Promise<string | undefined>;
   /** Backup directory for this session. Set after the first successful backup. */
   readonly dir: () => string | undefined;
 }
@@ -267,7 +303,7 @@ export function createBackupSession(opts: BackupOptions): BackupSession {
 
       let st: FileStat;
       try {
-        st = kind === "link" ? await fs.lstat(path) : await fs.stat(path);
+        st = kind === "content" ? await fs.stat(path) : await fs.lstat(path);
       } catch (err: unknown) {
         if (isNotFound(err)) return undefined;
         throw err;
@@ -275,7 +311,7 @@ export function createBackupSession(opts: BackupOptions): BackupSession {
       if (st.isDirectory) {
         throw new FsSafeError("cannot back up a directory", path);
       }
-      if (kind === "link" && !st.isSymbolicLink) {
+      if (kind !== "content" && !st.isSymbolicLink) {
         throw new FsSafeError("expected a symbolic link", path);
       }
 
@@ -284,6 +320,8 @@ export function createBackupSession(opts: BackupOptions): BackupSession {
       await fs.mkdir(dirname(dest), { recursive: true, mode: 0o700 });
       if (kind === "link") {
         await fs.symlink(await fs.readlink(path), dest);
+      } else if (kind === "link-text") {
+        await fs.writeFile(dest, `${await fs.readlink(path)}\n`, { flag: "wx" });
       } else {
         await fs.copyFile(path, dest);
       }

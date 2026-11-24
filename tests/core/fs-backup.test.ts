@@ -149,6 +149,21 @@ describe("createBackupSession", () => {
     expect(await readlink(backupPath as string)).toBe("real.md");
   });
 
+  it("records a link as a text file holding its target when kind is link-text", async () => {
+    const fs = createNodeFs();
+    const target = join(dir, "real.md");
+    const link = join(dir, "AGENTS.md");
+    await writeFile(target, "content");
+    await fs.symlink("real.md", link);
+
+    const session = createBackupSession({ fs, root: join(dir, "backups"), now: () => FIXED_NOW });
+    const backupPath = await session.backup(link, { kind: "link-text" });
+
+    expect(backupPath).toBe(join(session.dir() as string, dir.slice(1), "AGENTS.md"));
+    expect(await readFile(backupPath as string, "utf8")).toBe("real.md\n");
+    expect((await fs.lstat(backupPath as string)).isSymbolicLink).toBe(false);
+  });
+
   it("throws FsSafeError when the source is a directory", async () => {
     const fs = createNodeFs();
     const sub = join(dir, "subdir");
