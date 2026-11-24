@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
   JsonPatchError,
+  type JsonPatchResult,
   type JsonValue,
   parseJsonText,
   patchJsonKey,
@@ -13,6 +14,14 @@ const FIXTURES = new URL("../fixtures/core/json/", import.meta.url);
 
 function fixture(name: string): string {
   return readFileSync(new URL(name, FIXTURES), "utf8");
+}
+
+/** The patched text of a result that is expected to carry content. */
+function textOf(result: JsonPatchResult): string {
+  if (result.content === undefined) {
+    throw new Error("expected patched text");
+  }
+  return result.content;
 }
 
 function expectCode(fn: () => unknown, code: string): void {
@@ -80,7 +89,7 @@ describe("patchJsonKey span strategy", () => {
         "",
       ].join("\n"),
     );
-    expect(parseJsonText(result.content)).toEqual({
+    expect(parseJsonText(textOf(result))).toEqual({
       numStartups: 1,
       projects: { "/repo": { allowedTools: [], mcpServers: { alpha: { command: "a" } } } },
     });
@@ -115,7 +124,9 @@ describe("patchJsonKey span strategy", () => {
     const result = patchJsonKey(fixture("claude-like.json"), ["mcpServers"], {
       x: { command: 'a}"b' },
     });
-    expect(parseJsonText(result.content)).toMatchObject({ mcpServers: { x: { command: 'a}"b' } } });
+    expect(parseJsonText(textOf(result))).toMatchObject({
+      mcpServers: { x: { command: 'a}"b' } },
+    });
   });
 });
 
@@ -160,8 +171,8 @@ describe("patchJsonKey create and errors", () => {
       const result = patchJsonKey(original, ["mcpServers"], { x: { command: "c" } });
       expect(result.strategy).toBe("create");
       expect(result.changed).toBe(true);
-      expect(parseJsonText(result.content)).toEqual({ mcpServers: { x: { command: "c" } } });
-      expect(result.content.endsWith("\n")).toBe(true);
+      expect(parseJsonText(textOf(result))).toEqual({ mcpServers: { x: { command: "c" } } });
+      expect(textOf(result).endsWith("\n")).toBe(true);
     }
   });
 
@@ -183,10 +194,46 @@ describe("patchJsonKey create and errors", () => {
   });
 });
 
+describe("patchJsonKey deletes on missing or blank files", () => {
+  it("is a no-op when the file is missing", () => {
+    expect(patchJsonKey(undefined, ["mcpServers"], undefined)).toEqual({
+      content: undefined,
+      changed: false,
+      strategy: "noop",
+    });
+  });
+
+  it("is a no-op and keeps the text for empty or whitespace-only files", () => {
+    for (const original of ["", " \n\t"]) {
+      expect(patchJsonKey(original, ["mcpServers"], undefined)).toEqual({
+        content: original,
+        changed: false,
+        strategy: "noop",
+      });
+    }
+  });
+});
+
 describe("patchJsonKey reserialize fallback", () => {
-  it("falls back when the splice cannot preserve duplicate keys", () => {
-    const result = patchJsonKey('{"a":1,"a":2}', ["a"], 3);
-    expect(result).toEqual({ content: '{"a":3}', changed: true, strategy: "reserialize" });
+  it("refuses instead of re-serializing when the root object has a duplicate key", () => {
+    expectCode(() => patchJsonKey('{"a":1,"a":2}', ["a"], 3), "duplicate-root-key");
+  });
+
+  it("refuses a fallback when a number literal does not round-trip", () => {
+    expectCode(
+      () => patchJsonKey('{"n":0.10000000000000000001,"x":{"a":1,"a":2}}', ["x", "a"], 3),
+      "lossy-number",
+    );
+    expectCode(() => patchJsonKey('{"n":1e400,"x":{"a":1,"a":2}}', ["x", "a"], 3), "lossy-number");
+  });
+
+  it("still falls back for a compact document whose numbers round-trip", () => {
+    const result = patchJsonKey('{"x":{"a":1,"a":2},"n":1.5e300}', ["x", "a"], 3);
+    expect(result).toEqual({
+      content: '{"x":{"a":3},"n":1.5e+300}',
+      changed: true,
+      strategy: "reserialize",
+    });
   });
 
   it("reserialize reorders integer-like keys, which is why span editing exists", () => {

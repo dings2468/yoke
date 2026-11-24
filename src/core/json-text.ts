@@ -32,7 +32,9 @@ export type JsonPatchErrorCode =
   | "not-an-object"
   | "unsafe-number"
   | "splice-failed"
-  | "verify-failed";
+  | "verify-failed"
+  | "duplicate-root-key"
+  | "lossy-number";
 
 export class JsonPatchError extends Error {
   readonly code: JsonPatchErrorCode;
@@ -74,6 +76,15 @@ export function detectJsonFormat(text: string): JsonFormat {
  * and numbers with a fraction or exponent, so those are never rejected.
  */
 export function assertSafeJsonNumbers(text: string): void {
+  forEachNumberLiteral(text, (token) => {
+    if (!/[.eE]/.test(token) && !Number.isSafeInteger(Number(token))) {
+      throw new JsonPatchError(`integer ${token} is outside the safe range`, "unsafe-number");
+    }
+  });
+}
+
+/** Calls `visit` with each number literal in `text`, skipping string literals. */
+function forEachNumberLiteral(text: string, visit: (token: string) => void): void {
   let i = 0;
   while (i < text.length) {
     const ch = text.charAt(i);
@@ -93,9 +104,7 @@ export function assertSafeJsonNumbers(text: string): void {
         continue;
       }
       const token = match[0];
-      if (!/[.eE]/.test(token) && !Number.isSafeInteger(Number(token))) {
-        throw new JsonPatchError(`integer ${token} is outside the safe range`, "unsafe-number");
-      }
+      visit(token);
       i += token.length;
       continue;
     }
@@ -242,7 +251,8 @@ export function patchJsonReserialize(
 }
 
 export interface JsonPatchResult {
-  readonly content: string;
+  /** The patched text. `undefined` only for a no-op deletion on a missing file. */
+  readonly content: string | undefined;
   readonly changed: boolean;
   readonly strategy: "span" | "reserialize" | "create" | "noop";
 }
@@ -495,11 +505,66 @@ function deleteEdit(scan: ObjectScan, target: Member): Edit {
   return { start: target.start, end: (next as Member).start, text: "" };
 }
 
+/** Canonical decimal form of a number literal, so equal values compare equal ("1.5e300" and "1.5e+300"). */
+function decimalKey(literal: string): string {
+  const match = /^(-?)(\d+)(?:\.(\d*))?(?:[eE]([+-]?\d+))?$/.exec(literal);
+  if (match === null) {
+    return literal;
+  }
+  const [, sign = "", intPart = "", frac = "", exp = "0"] = match;
+  let digits = intPart + frac;
+  let point = intPart.length + Number(exp);
+  const leading = digits.length - digits.replace(/^0+/, "").length;
+  digits = digits.slice(leading);
+  point -= leading;
+  digits = digits.replace(/0+$/, "");
+  if (digits === "") {
+    return "0";
+  }
+  return `${sign}${digits}e${point}`;
+}
+
+/** True when the literal's exact value is what JSON.stringify writes back for it. */
+function isRoundTripNumber(token: string): boolean {
+  const parsed = Number(token);
+  return Number.isFinite(parsed) && decimalKey(token) === decimalKey(String(parsed));
+}
+
+/** Throws `duplicate-root-key` or `lossy-number` when a re-serialize would silently change the document. */
+function assertReserializable(text: string): void {
+  let rootKeys: readonly string[];
+  try {
+    const format = detectJsonFormat(text);
+    rootKeys = scanObject(text, skipWs(text, format.bom ? 1 : 0)).members.map((m) => m.key);
+  } catch (cause) {
+    throw new JsonPatchError(
+      "root object keys could not be scanned, so duplicate keys cannot be ruled out; refusing to re-serialize",
+      "duplicate-root-key",
+      { cause },
+    );
+  }
+  if (new Set(rootKeys).size !== rootKeys.length) {
+    throw new JsonPatchError(
+      "root object has a duplicate key; re-serializing would silently drop a value, so the file was not changed",
+      "duplicate-root-key",
+    );
+  }
+  forEachNumberLiteral(text, (token) => {
+    if (!isRoundTripNumber(token)) {
+      throw new JsonPatchError(
+        `number ${token} does not round-trip through JSON.parse and JSON.stringify; re-serializing would rewrite it, so the file was not changed`,
+        "lossy-number",
+      );
+    }
+  });
+}
+
 /**
  * Sets (or deletes, with `undefined`) the key at `path` in `original`, editing only the target span.
  * Every splice is re-parsed and compared with the expected structure. On a splice or verify failure it
- * falls back to re-serializing with the detected format. Invalid JSON, a non-object root, and unsafe
- * integers are never patched and always throw.
+ * falls back to re-serializing with the detected format, unless the document has a duplicate root key or a
+ * number literal that does not round-trip; those throw instead. Invalid JSON, a non-object root, and unsafe
+ * integers are never patched and always throw. A deletion on a missing or blank file is a no-op.
  */
 export function patchJsonKey(
   original: string | undefined,
@@ -507,6 +572,9 @@ export function patchJsonKey(
   value: JsonValue | undefined,
 ): JsonPatchResult {
   if (original === undefined || original.trim() === "") {
+    if (value === undefined) {
+      return { content: original, changed: false, strategy: "noop" };
+    }
     const content = serializeJson(setAtPath({}, path, value), DEFAULT_JSON_FORMAT);
     return { content, changed: true, strategy: "create" };
   }
@@ -532,6 +600,7 @@ export function patchJsonKey(
     }
   }
 
+  assertReserializable(original);
   const content = patchJsonReserialize(original, path, value);
   verifyJsonPatch(original, content, path, value);
   return { content, changed: content !== original, strategy: "reserialize" };
