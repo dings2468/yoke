@@ -8,7 +8,9 @@
  * - agy has no SSE transport. SSE servers are never translated here.
  */
 import { join } from "node:path";
+import { readJsonIfExists } from "../core/fs-safe.js";
 import {
+  getAtPath,
   isJsonObject,
   type JsonKeyPath,
   type JsonObject,
@@ -16,11 +18,32 @@ import {
 } from "../core/json-text.js";
 import {
   type McpHttpServer,
+  type McpServerDefinition,
   McpServerDefinitionSchema,
   McpServerNameSchema,
   type McpStdioServer,
+  type PartialYokeConfig,
+  PartialYokeConfigSchema,
+  type ResolvedYokeConfig,
+  type SyncOptions,
 } from "../core/schema.js";
-import { type NativeEntry, NativeStateError } from "./base.js";
+import {
+  type AdapterContext,
+  advisoryPlan,
+  type DesiredEntry,
+  definedNames,
+  type FileChangePlan,
+  layerView,
+  mergeServerEntries,
+  type NativeEntry,
+  NativeStateError,
+  planJsonKeyPatch,
+  readFileSnapshot,
+  stubNames,
+  toDefinition,
+  toNativeInstructions,
+  usesEnvReference,
+} from "./base.js";
 
 export const AGY_NAME = "agy";
 
@@ -191,3 +214,143 @@ export function readAgyServers(
     ]),
   );
 }
+
+// #region AG2 mcp
+
+/** Managed (non-opaque) user-tier servers from the native file. Opaque entries are left out. */
+function managedDefinitions(
+  entries: ReadonlyMap<string, NativeEntry>,
+): Readonly<Record<string, McpServerDefinition>> {
+  const out: [string, McpServerDefinition][] = [];
+  for (const [name, entry] of entries) {
+    if (entry.kind === "managed") {
+      out.push([name, entry.def]);
+    }
+  }
+  return Object.fromEntries(out);
+}
+
+/**
+ * Reads agy's user tier (`mcp_config.json`) and the GEMINI.md instructions. `user` holds the managed MCP definitions and
+ * the user instructions. `project` holds an empty MCP map and the project instructions. There is no local tier.
+ */
+export async function readAgyNativeState(
+  ctx: AdapterContext,
+  repoPath: string,
+): Promise<PartialYokeConfig> {
+  const paths = agyPaths(ctx.homeDir, repoPath);
+  const cur = await readJsonIfExists(ctx.fs, paths.mcpConfig);
+  const raw = cur === undefined ? undefined : getAtPath(cur.value, AGY_MCP_KEY);
+  const servers = readAgyServers(raw, paths.mcpConfig);
+
+  const userInstructions = toNativeInstructions(
+    paths.userInstructions,
+    await readFileSnapshot(ctx.fs, paths.userInstructions),
+  );
+  const projectInstructions = toNativeInstructions(
+    paths.projectInstructions,
+    await readFileSnapshot(ctx.fs, paths.projectInstructions),
+  );
+
+  const user = {
+    mcps: managedDefinitions(servers),
+    ...(userInstructions === undefined ? {} : { instructions: userInstructions }),
+  };
+  const project = {
+    mcps: {},
+    ...(projectInstructions === undefined ? {} : { instructions: projectInstructions }),
+  };
+  return PartialYokeConfigSchema.parse({ user, project });
+}
+
+/** Translates the user-tier desired servers. SSE is skipped with a warning; `${VAR}` gets one warning per server. */
+function userDesired(config: ResolvedYokeConfig): {
+  readonly desired: ReadonlyMap<string, DesiredEntry>;
+  readonly mcps: Readonly<Record<string, McpServerDefinition>>;
+  readonly warnings: readonly string[];
+} {
+  const desired = new Map<string, DesiredEntry>();
+  const mcps: Record<string, McpServerDefinition> = {};
+  const warnings: string[] = [];
+  for (const [name, server] of Object.entries(layerView(config, "user"))) {
+    const def = toDefinition(server);
+    if (def.transport === "sse") {
+      warnings.push(`agy: MCP server "${name}" skipped: agy does not support SSE transport`);
+      continue;
+    }
+    desired.set(name, { def, entry: toAgyEntry(def, server.enabled) });
+    mcps[name] = def;
+    if (usesEnvReference(def)) {
+      warnings.push(
+        `agy: MCP server "${name}" uses \${VAR} references in env/headers; agy does not expand them, so the literal text is sent`,
+      );
+    }
+  }
+  return { desired, mcps, warnings };
+}
+
+async function planUserMcp(
+  ctx: AdapterContext,
+  config: ResolvedYokeConfig,
+  path: string,
+): Promise<FileChangePlan> {
+  const cur = await readJsonIfExists(ctx.fs, path);
+  const raw = cur === undefined ? undefined : getAtPath(cur.value, AGY_MCP_KEY);
+  const native = readAgyServers(raw, path);
+  const { desired, mcps, warnings } = userDesired(config);
+  const merged = mergeServerEntries({
+    harness: AGY_NAME,
+    path,
+    native,
+    desired,
+    force: ctx.force ?? false,
+  });
+  return planJsonKeyPatch(ctx.fs, {
+    scope: "user",
+    path,
+    keyPath: AGY_MCP_KEY,
+    value: merged.value,
+    summary: `agy: user MCP servers in ${path}`,
+    warnings: [...warnings, ...merged.warnings],
+    expected: [{ kind: "mcps", scope: "user", mcps }],
+  });
+}
+
+/**
+ * Plans the agy MCP config (SPEC §6). The user scope writes `mcp_config.json`. Project and local servers are never
+ * written to the global file: each one produces a warning in an advisory plan that changes nothing.
+ */
+export async function planAgyMcp(
+  ctx: AdapterContext,
+  config: ResolvedYokeConfig,
+  opts: SyncOptions,
+): Promise<FileChangePlan[]> {
+  const paths = agyPaths(ctx.homeDir, opts.repoPath);
+  const plans: FileChangePlan[] = [];
+  if (opts.scopes.includes("user")) {
+    plans.push(await planUserMcp(ctx, config, paths.mcpConfig));
+  }
+  for (const scope of ["project", "local"] as const) {
+    if (!opts.scopes.includes(scope)) {
+      continue;
+    }
+    const names = [...definedNames(config, scope), ...stubNames(config, scope)].sort();
+    if (names.length === 0) {
+      continue;
+    }
+    plans.push(
+      advisoryPlan(
+        scope,
+        paths.mcpConfig,
+        `agy: ${scope} MCP servers are not written`,
+        names.map(
+          (name) =>
+            `agy: MCP server "${name}" (${scope} scope) skipped: agy has no project-level MCP config in v0.1; not written to the global file`,
+        ),
+      ),
+    );
+  }
+  return plans;
+}
+
+// #endregion AG2 mcp
