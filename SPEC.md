@@ -55,7 +55,7 @@ Precedence is strictly **`local` > `project` > `user`**.
 ### Sync Modes (Handling Harness Asymmetry)
 Claude Code natively supports a 3rd `local` tier (`CLAUDE.local.md` + per-project overrides in `~/.claude.json`). Other harnesses may not expose an equivalent tier; the scope split for `agy` is unverified in v0.1. `yoke` supports two modes:
 
-1. **`compiled` (Default):** Treats all generated harness files (`.mcp.json`, `CLAUDE.md`, `GEMINI.md`) as gitignored build artifacts. `yoke sync` merges `project + local` into the target files for harnesses that support them, without polluting `git status`. Project and local MCP servers are not written for `agy` in v0.1 (see §6).
+1. **`compiled` (Default):** Treats all generated harness files (`.mcp.json`, `CLAUDE.md`, `GEMINI.md`) as gitignored build artifacts. `yoke sync` writes project servers and instructions into the target files for harnesses that support them, and writes local-scope Claude servers to `projects[<git root>].mcpServers` in `~/.claude.json`, never into a repo file, without polluting `git status`. Project and local MCP servers are not written for `agy` in v0.1 (see §6).
 2. **`hybrid` (Mixed Teams):** Writes only `project` into tracked files so teammates without `yoke` still get valid configs. Maps `local` natively where supported (Claude), warns if a non-env `local` override cannot be isolated for a harness, and relies on `.env.local` (gitignored) for private tokens.
 
 ### 3.1 Merge rules
@@ -346,8 +346,9 @@ Planning receives a read-only filesystem; each `apply` closure holds the writabl
 | :--- | :--- | :--- |
 | **User MCP** | `~/.claude.json` (patch *only* `mcpServers`) | `~/.gemini/config/mcp_config.json` (top-level `mcpServers` object; patch only that key) |
 | **Project MCP** | `./.mcp.json` | Not supported in v0.1 |
-| **Remote HTTP Key** | `"type": "http"`, `"url": "..."` | `"url": "..."` (`readNativeState` also accepts the legacy alias `serverUrl`) |
-| **Disable (`enabled: false`)** | Entry is omitted | `"disabled": true`, emitted only when the merged result still has a full definition. A stub with only `enabled: false` (no transport) suppresses the inherited entry. |
+| **Local MCP** | `projects[<git root realpath>].mcpServers` in `~/.claude.json` | Not supported in v0.1; local servers are skipped with a warning (see mapping rules) |
+| **Remote HTTP Key** | `"type": "http"`, `"url": "..."` | `"url": "..."` is the key yoke writes (`readNativeState` also accepts the legacy alias `serverUrl`). agy 1.5.16 writes `serverUrl` when set via its CLI; yoke reads both and writes `url`. |
+| **Disable (`enabled: false`)** | For a project-level disable of a user-scope server, write the server name into `projects[<repo>].disabledMcpServers` in `~/.claude.json`, and track the name in `.yoke/state.json` so only yoke-added names are removed later. This key is undocumented in Claude Code (undocumented; verified against Claude Code 2.1.331). If the write is not possible, yoke warns and names the file, the harness, the scope, and the manual fix (`/mcp disable`). | `"disabled": true`, emitted only when the merged result still has a full definition. A stub with only `enabled: false` (no transport) suppresses the inherited entry. |
 | **User Instructions** | `~/.claude/CLAUDE.md` | `~/.gemini/GEMINI.md` *(unverified)* |
 | **Project Instructions** | `./CLAUDE.md` (+ `./CLAUDE.local.md` in hybrid) | `./GEMINI.md` *(unverified)* |
 | **Session Export** | Latest `.jsonl` in `~/.claude/projects/<repo-hash>/` | Latest local `agy` session log or `.yoke/HANDOFF.md` |
@@ -356,6 +357,9 @@ Planning receives a read-only filesystem; each `apply` closure holds the writabl
 **Mapping rules:**
 * agy does not support legacy HTTP+SSE. `transport: sse` servers are skipped for agy with a warning in `sync` and `doctor`, and are excluded from agy's `mcpHashes`. Claude keeps `type: "sse"`.
 * agy project-level MCP is not supported in v0.1 (unverified; no evidence of a per-project mechanism). Project and local MCP servers are SKIPPED for agy with a warning. They are never written to the global file.
+* Unknown keys inside an MCP entry are kept on rewrite when the transport is unchanged and are excluded from drift. Unknown top-level keys in a native config file are never parsed or modified.
+* An entry with an unknown transport (for example Claude's `ws`) is left unchanged and not managed. It is an error only when yoke defines a server with the same name, unless `--force` is passed.
+* `${VAR}` is stored literally in both harnesses. Claude expands it at runtime; agy does not, so yoke warns for each agy server whose env or headers use `${VAR}`.
 
 ---
 
