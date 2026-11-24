@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "lastSyncedAt": "2026-11-24T10:00:00.000Z",
+  "harnesses": {
+    "claude:project": {
+      "mcpHashes": {
+        "github": "0123456789ABCDEF0123456789abcdef0123456789abcdef0123456789abcdef"
+      },
+      "instructionsHash": null
+    }
+  }
+}
