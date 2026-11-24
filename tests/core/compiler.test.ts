@@ -1,5 +1,5 @@
 import { readFile } from "node:fs/promises";
-import { describe, expect, it } from "vitest";
+import { describe, expect, expectTypeOf, it } from "vitest";
 import {
   type CompileErrorCode,
   compileForTarget,
@@ -12,6 +12,7 @@ import {
 } from "../../src/core/compiler.js";
 
 const FIXTURES = new URL("../fixtures/core/compiler/", import.meta.url);
+const VALID = ["claude", "agy"] as const;
 
 async function fixture(name: string): Promise<string> {
   return readFile(new URL(name, FIXTURES), "utf8");
@@ -32,7 +33,7 @@ function errorOf(fn: () => unknown): InstructionCompileError {
 describe("compileForTarget", () => {
   it("keeps the claude text and drops the agy text for the SPEC §4.2 example", async () => {
     const text = await fixture("spec-4-2.md");
-    const out = compileForTarget(text, "claude");
+    const out = compileForTarget(text, "claude", VALID);
     expect(out).toContain("Use the native Edit tool for surgical refactors.");
     expect(out).not.toContain("Summarize large directory scans");
     expect(out).not.toContain("yoke:");
@@ -41,16 +42,16 @@ describe("compileForTarget", () => {
 
   it("keeps the agy text and drops the claude text for the SPEC §4.2 example", async () => {
     const text = await fixture("spec-4-2.md");
-    const out = compileForTarget(text, "agy");
+    const out = compileForTarget(text, "agy", VALID);
     expect(out).toContain("Summarize large directory scans before proposing edits.");
     expect(out).not.toContain("Use the native Edit tool");
     expect(out).not.toContain("yoke:");
     expect(out).toContain("Shared rule for every harness.");
   });
 
-  it("drops every conditional block for an unknown target", async () => {
+  it("drops every conditional block for a target outside the blocks", async () => {
     const text = await fixture("spec-4-2.md");
-    const out = compileForTarget(text, "x");
+    const out = compileForTarget(text, "x", VALID);
     expect(out).not.toContain("Use the native Edit tool");
     expect(out).not.toContain("Summarize large directory scans");
     expect(out).not.toContain("yoke:");
@@ -61,19 +62,98 @@ describe("compileForTarget", () => {
     const text = await fixture("fenced-docs.md");
     const parsed = parseConditionalBlocks(text);
     expect(parsed.blocks).toEqual([]);
-    expect(compileForTarget(text, "claude")).toBe(text);
+    expect(compileForTarget(text, "claude", VALID)).toBe(text);
   });
 
   it("keeps CRLF line endings verbatim", () => {
     const text =
       "one\r\n<!-- yoke:claude-only -->\r\nclaude\r\n<!-- /yoke:claude-only -->\r\ntwo\r\n";
-    expect(compileForTarget(text, "claude")).toBe("one\r\nclaude\r\ntwo\r\n");
-    expect(compileForTarget(text, "agy")).toBe("one\r\ntwo\r\n");
+    expect(compileForTarget(text, "claude", VALID)).toBe("one\r\nclaude\r\ntwo\r\n");
+    expect(compileForTarget(text, "agy", VALID)).toBe("one\r\ntwo\r\n");
   });
 
   it("does not collapse blank lines", () => {
     const text = "a\n\n<!-- yoke:agy-only -->\nx\n<!-- /yoke:agy-only -->\n\nb\n";
-    expect(compileForTarget(text, "claude")).toBe("a\n\n\nb\n");
+    expect(compileForTarget(text, "claude", VALID)).toBe("a\n\n\nb\n");
+  });
+
+  it("requires validTargets as a non-optional string list", () => {
+    expectTypeOf(compileForTarget).parameters.toEqualTypeOf<
+      [text: string, target: string, validTargets: readonly string[]]
+    >();
+  });
+
+  it("throws unknown-target for a misspelled block target", () => {
+    const text = "<!-- yoke:cluade-only -->\nx\n<!-- /yoke:cluade-only -->\n";
+    const error = errorOf(() => compileForTarget(text, "claude", VALID));
+    expect(error.code).toBe("unknown-target");
+    expect(error.line).toBe(1);
+  });
+});
+
+describe("indented code", () => {
+  it("keeps a 4-space indented claude-only block verbatim for every target", async () => {
+    const text = await fixture("indented-code.md");
+    expect(parseConditionalBlocks(text, { validTargets: VALID }).blocks).toEqual([]);
+    for (const target of ["claude", "agy", "x"]) {
+      expect(compileForTarget(text, target, VALID)).toBe(text);
+    }
+  });
+
+  it("keeps an indented misspelled tag as ordinary text", () => {
+    const text = "    <!-- yoke:cluade-only -->\n    x\n    <!-- /yoke:cluade-only -->\n";
+    expect(compileForTarget(text, "claude", VALID)).toBe(text);
+  });
+
+  it("treats a 4-space fence as indented code, so later tags still count", () => {
+    const text = "    ```md\n<!-- yoke:claude-only -->\nx\n<!-- /yoke:claude-only -->\n";
+    const parsed = parseConditionalBlocks(text, { validTargets: VALID });
+    expect(parsed.blocks).toEqual([{ target: "claude", openLine: 2, closeLine: 4 }]);
+  });
+
+  it("skips a fence nested in a list item when the fence is 0 to 3 spaces past the item", () => {
+    const text = "- item\n\n  ```md\n<!-- yoke:claude-only -->\n```\n";
+    expect(parseConditionalBlocks(text, { validTargets: VALID }).blocks).toEqual([]);
+  });
+
+  it("skips a fence nested in a list item indented 4 absolute spaces", () => {
+    const text = "- item\n\n    ```md\n<!-- yoke:claude-only -->\n    ```\n";
+    expect(parseConditionalBlocks(text, { validTargets: VALID }).blocks).toEqual([]);
+  });
+
+  it("does not treat a fence 4 or more spaces past a list item as a fence", () => {
+    const text =
+      "- item\n\n        ```md\n<!-- yoke:claude-only -->\nx\n<!-- /yoke:claude-only -->\n";
+    expect(parseConditionalBlocks(text, { validTargets: VALID }).blocks).toEqual([
+      { target: "claude", openLine: 4, closeLine: 6 },
+    ]);
+  });
+});
+
+describe("byte order mark", () => {
+  it("strips a BOM from the source so the header is the first line", () => {
+    expect(
+      compileInstructions({ source: "﻿# Rules\n", target: "claude", validTargets: VALID }),
+    ).toBe(`${GENERATED_HEADER}\n# Rules\n`);
+  });
+
+  it("strips a BOM from the local text before appending it", () => {
+    expect(
+      compileInstructions({
+        source: "shared\n",
+        local: "﻿mine\n",
+        target: "claude",
+        validTargets: VALID,
+      }),
+    ).toBe(`${GENERATED_HEADER}\nshared\n\nmine\n`);
+  });
+
+  it("finds a tag on the first line after a BOM", () => {
+    const text = "﻿<!-- yoke:claude-only -->\nx\n<!-- /yoke:claude-only -->\n";
+    expect(parseConditionalBlocks(text, { validTargets: VALID }).blocks).toEqual([
+      { target: "claude", openLine: 1, closeLine: 3 },
+    ]);
+    expect(compileForTarget(text, "claude", VALID)).toBe("x\n");
   });
 });
 
@@ -170,7 +250,7 @@ describe("parse errors", () => {
   }
 
   it("rejects a malformed tag inside compileForTarget too", () => {
-    expect(() => compileForTarget("<!-- /yoke:claude -->\n", "claude")).toThrow(
+    expect(() => compileForTarget("<!-- /yoke:claude -->\n", "claude", VALID)).toThrow(
       InstructionCompileError,
     );
   });
@@ -184,7 +264,11 @@ describe("detectEol and hasGeneratedHeader", () => {
   });
 
   it("recognizes the header in compiled output and not in plain text", () => {
-    const compiled = compileInstructions({ source: "hello\n", target: "claude" });
+    const compiled = compileInstructions({
+      source: "hello\n",
+      target: "claude",
+      validTargets: VALID,
+    });
     expect(hasGeneratedHeader(compiled)).toBe(true);
     expect(hasGeneratedHeader("hello\n")).toBe(false);
   });
@@ -196,13 +280,15 @@ describe("detectEol and hasGeneratedHeader", () => {
 
 describe("compileInstructions", () => {
   it("prefixes the header and uses the source EOL", () => {
-    expect(compileInstructions({ source: "a\r\nb\r\n", target: "claude" })).toBe(
-      `${GENERATED_HEADER}\r\na\r\nb\r\n`,
-    );
+    expect(
+      compileInstructions({ source: "a\r\nb\r\n", target: "claude", validTargets: VALID }),
+    ).toBe(`${GENERATED_HEADER}\r\na\r\nb\r\n`);
   });
 
   it("adds a final newline when the source has none", () => {
-    expect(compileInstructions({ source: "a", target: "claude" })).toBe(`${GENERATED_HEADER}\na\n`);
+    expect(compileInstructions({ source: "a", target: "claude", validTargets: VALID })).toBe(
+      `${GENERATED_HEADER}\na\n`,
+    );
   });
 
   it("appends local overrides after a blank line", () => {
@@ -210,13 +296,14 @@ describe("compileInstructions", () => {
       source: "shared\n",
       local: "mine\n",
       target: "claude",
+      validTargets: VALID,
     });
     expect(out).toBe(`${GENERATED_HEADER}\nshared\n\nmine\n`);
   });
 
   it("adds only the header to a file with no tags", () => {
     const text = "# Plain\n\nNo blocks here.\n";
-    expect(compileInstructions({ source: text, target: "claude" })).toBe(
+    expect(compileInstructions({ source: text, target: "claude", validTargets: VALID })).toBe(
       `${GENERATED_HEADER}\n${text}`,
     );
   });
@@ -229,5 +316,24 @@ describe("compileInstructions", () => {
         validTargets: ["claude", "agy"],
       }),
     ).toThrow(InstructionCompileError);
+  });
+
+  it("throws unknown-target when the local override names a misspelled target", () => {
+    const error = errorOf(() =>
+      compileInstructions({
+        source: "shared\n",
+        local: "<!-- yoke:cluade-only -->\nx\n<!-- /yoke:cluade-only -->\n",
+        target: "claude",
+        validTargets: VALID,
+      }),
+    );
+    expect(error.code).toBe("unknown-target");
+  });
+
+  it("requires validTargets", () => {
+    expectTypeOf(compileInstructions).parameter(0).toHaveProperty("validTargets");
+    expectTypeOf<Parameters<typeof compileInstructions>[0]["validTargets"]>().toEqualTypeOf<
+      readonly string[]
+    >();
   });
 });
