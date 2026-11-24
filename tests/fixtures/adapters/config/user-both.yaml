@@ -1,0 +1,5 @@
+version: 1
+mcps:
+  both:
+    transport: stdio
+    command: gh

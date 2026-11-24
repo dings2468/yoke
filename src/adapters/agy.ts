@@ -106,9 +106,20 @@ export function toAgyEntry(def: McpStdioServer | McpHttpServer, enabled: boolean
   return out;
 }
 
+function isStringArray(value: JsonValue): value is string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === "string");
+}
+
+function isStringMap(value: JsonValue): boolean {
+  return isJsonObject(value) && Object.values(value).every((item) => typeof item === "string");
+}
+
 /**
- * Reads one agy entry (Q1). Returns `managed` with the canonical definition and extras, `opaque` for an unknown
- * `type` or an entry with neither a command nor a URL, or throws NativeStateError for a corrupt entry.
+ * Reads one agy entry (Q1). Returns `managed` with the canonical definition and extras. Returns `opaque`, with the
+ * raw entry kept byte-for-byte, for an unknown `type`, an entry with neither a command nor a URL, or fields that do
+ * not fit its transport (for example `command` with `url`, or `env` on an http entry). Throws NativeStateError for a
+ * corrupt value: a non-string env or header value, a non-string-array `args`, an invalid name, `httpUrl`, or a `url`
+ * that differs from `serverUrl`.
  */
 export function fromAgyEntry(name: string, raw: JsonValue, path: string): NativeEntry {
   const failure = (why: string): NativeStateError =>
@@ -141,6 +152,24 @@ export function fromAgyEntry(name: string, raw: JsonValue, path: string): Native
   if (url !== undefined && serverUrl !== undefined && url !== serverUrl) {
     throw failure("url and serverUrl differ");
   }
+  // Corrupt values throw whatever the transport, so a field that does not fit the entry still has to be well formed.
+  const command = present("command");
+  if (command !== undefined && typeof command !== "string") {
+    throw failure("command must be a string");
+  }
+  const args = present("args");
+  if (args !== undefined && !isStringArray(args)) {
+    throw failure("args must be a string array");
+  }
+  const env = present("env");
+  if (env !== undefined && !isStringMap(env)) {
+    throw failure("env values must be strings");
+  }
+  const headers = present("headers");
+  if (headers !== undefined && !isStringMap(headers)) {
+    throw failure("headers values must be strings");
+  }
+
   const type = present("type");
   if (type !== undefined && typeof type !== "string") {
     throw failure("type must be a string");
@@ -159,25 +188,24 @@ export function fromAgyEntry(name: string, raw: JsonValue, path: string): Native
   } else {
     return { kind: "opaque", raw, reason: "no command or url" };
   }
-  if (type !== undefined && type !== transport) {
-    throw failure(`type "${String(type)}" does not fit a ${transport} entry`);
-  }
+
+  // agy ignores `type`, but a field that does not fit the entry's transport makes the entry opaque (SPEC §6).
+  const transportKey =
+    transport === "stdio" ? "command" : Object.hasOwn(raw, "url") ? "url" : "serverUrl";
   const foreignKeys = transport === "stdio" ? HTTP_ONLY_KEYS : STDIO_ONLY_KEYS;
   for (const key of foreignKeys) {
     if (Object.hasOwn(raw, key)) {
-      throw failure(`"${key}" does not fit a ${transport} entry`);
+      return { kind: "opaque", raw, reason: `"${transportKey}" conflicts with "${key}"` };
     }
+  }
+  if (type !== undefined && type !== transport) {
+    return { kind: "opaque", raw, reason: `type "${type}" conflicts with a ${transport} entry` };
   }
 
   const wanted: Record<string, unknown> =
     transport === "stdio"
-      ? {
-          transport,
-          command: present("command"),
-          args: present("args"),
-          env: present("env"),
-        }
-      : { transport, url: remoteUrl, headers: present("headers") };
+      ? { transport, command, args, env }
+      : { transport, url: remoteUrl, headers };
   const candidate: Record<string, unknown> = Object.fromEntries(
     Object.entries(wanted).filter(([, value]) => value !== undefined),
   );

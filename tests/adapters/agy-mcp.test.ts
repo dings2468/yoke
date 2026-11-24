@@ -2,11 +2,11 @@
  * tests/adapters/agy-mcp.test.ts: agy native state reader and MCP plan (AG2).
  * Fixtures are copied into a sandbox. Every path is injected. The real ~/.gemini is never touched.
  */
-import { readFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { AGY_MCP_KEY, agyPaths, planAgyMcp, readAgyNativeState } from "../../src/adapters/agy.js";
-import type { FileChangePlan } from "../../src/adapters/base.js";
+import { type FileChangePlan, NativeStateError } from "../../src/adapters/base.js";
 import { READ_METHODS, type ReadFs } from "../../src/core/fs-safe.js";
 import {
   getAtPath,
@@ -199,6 +199,70 @@ describe("agy native state and MCP plan", () => {
       expect(plan.after).not.toBe(original);
       await plan.apply(makeApplyContext(sb));
       expect(await readFile(nativePath, "utf8")).toBe(plan.after);
+    });
+  });
+
+  describe("transport-mismatch entries", () => {
+    const MIXED = `{
+  "mcpServers": {
+    "both": { "command": "c", "url": "https://x.test/mcp" },
+    "remote-env": { "url": "https://y.test/mcp", "env": { "K": "v" } }
+  },
+  "zeta": 1
+}
+`;
+
+    it("keeps a mismatched entry unchanged, warns, and does not manage it", async () => {
+      await writeFile(nativePath, MIXED, "utf8");
+      const state = await readAgyNativeState(makeAdapterContext(sb), sb.repo);
+      expect(state.user?.mcps).toEqual({});
+
+      const config = await loadFixtureConfig(sb, { user: "user.yaml" });
+      const plans = await planAgyMcp(makeAdapterContext(sb), config, syncOptions(sb, ["user"]));
+      const plan = planFor(plans, "user");
+      expect(plan.warnings).toContain(
+        `agy: MCP server "both" in ${nativePath} has an unsupported transport ("command" conflicts with "url"); left unchanged and not managed by yoke`,
+      );
+
+      await plan.apply(makeApplyContext(sb));
+      const servers = serversOf(await readFile(nativePath, "utf8"));
+      expect(servers.both).toStrictEqual({ command: "c", url: "https://x.test/mcp" });
+      expect(servers["remote-env"]).toStrictEqual({
+        url: "https://y.test/mcp",
+        env: { K: "v" },
+      });
+    });
+
+    it("fails when yoke defines the same name, unless force is set", async () => {
+      await writeFile(nativePath, MIXED, "utf8");
+      const config = await loadFixtureConfig(sb, { user: "user-both.yaml" });
+
+      await expect(
+        planAgyMcp(makeAdapterContext(sb), config, syncOptions(sb, ["user"])),
+      ).rejects.toThrow(NativeStateError);
+
+      const plans = await planAgyMcp(
+        makeAdapterContext(sb, { force: true }),
+        config,
+        syncOptions(sb, ["user"]),
+      );
+      await planFor(plans, "user").apply(makeApplyContext(sb));
+      expect(serversOf(await readFile(nativePath, "utf8")).both).toStrictEqual({ command: "gh" });
+    });
+
+    it("still throws for a corrupt value in a mismatched entry", async () => {
+      await writeFile(
+        nativePath,
+        '{"mcpServers": {"bad": {"url": "https://y.test/mcp", "env": {"K": 1}}}}',
+        "utf8",
+      );
+      const config = await loadFixtureConfig(sb, { user: "user.yaml" });
+      await expect(readAgyNativeState(makeAdapterContext(sb), sb.repo)).rejects.toThrow(
+        NativeStateError,
+      );
+      await expect(
+        planAgyMcp(makeAdapterContext(sb), config, syncOptions(sb, ["user"])),
+      ).rejects.toThrow(NativeStateError);
     });
   });
 
