@@ -1,7 +1,8 @@
 /**
  * src/commands/init.ts — `yoke init`: choose what to import from native harness files, then write yoke.yaml,
- * yoke.local.yaml, AGENTS.md, and .gitignore lines through the plan pipeline (executePlan). Nothing outside the
- * repo is written except backups. Init never syncs and never writes .yoke/yoke.lock or .yoke/state.json.
+ * yoke.local.yaml, AGENTS.md, and .gitignore lines through the plan pipeline (executePlan). It also writes the
+ * user-scope yoke.yaml (merged, never clobbered, backed up first). Init never syncs and never writes .yoke/yoke.lock
+ * or .yoke/state.json.
  *
  * Adapters are reached only through the injected factories and their capabilities. Prompts come in through
  * InitDeps; the real terminal wrapper (createClackPrompts) is the only place @clack/prompts is used.
@@ -38,6 +39,7 @@ import {
   type InstructionCandidate,
   type ProjectWriteIntent,
 } from "./init-types.js";
+import { mergeUserConfig } from "./init-user.js";
 
 export interface InitOptions {
   readonly importFrom: readonly string[] | undefined;
@@ -68,6 +70,18 @@ class CancelledError extends Error {
 
 type TextIntent = Extract<ProjectWriteIntent, { kind: "text" }>;
 type LinesIntent = Extract<ProjectWriteIntent, { kind: "ensure-lines" }>;
+
+/** The user-scope yoke.yaml (U5): merged text, backed up before overwrite, created with mode 0600. */
+interface UserTextIntent {
+  readonly kind: "text";
+  readonly scope: "user";
+  readonly path: string;
+  readonly content: string;
+  readonly ifExists: "overwrite-with-backup";
+  readonly mode: number;
+}
+
+type WriteIntent = ProjectWriteIntent | UserTextIntent;
 
 function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
@@ -187,7 +201,11 @@ async function generatedPaths(input: {
 }
 
 /** Read-only planning for one text write (DI9). Identical content is a noop; a difference follows ifExists. */
-async function planText(fs: ReadFs, repoPath: string, intent: TextIntent): Promise<FileChangePlan> {
+async function planText(
+  fs: ReadFs,
+  repoPath: string,
+  intent: TextIntent | UserTextIntent,
+): Promise<FileChangePlan> {
   const before = await readTextIfExists(fs, intent.path);
   const rel = relativeTo(repoPath, intent.path);
   if (before === intent.content) {
@@ -200,6 +218,8 @@ async function planText(fs: ReadFs, repoPath: string, intent: TextIntent): Promi
     throw new InitError(`${rel} already exists; pass --force to back it up and overwrite`);
   }
   const existed = before !== undefined;
+  // Only a created file takes the intent's mode; an existing file keeps its own permissions.
+  const createOptions = !existed && intent.scope === "user" ? { mode: intent.mode } : undefined;
   return {
     scope: intent.scope,
     path: intent.path,
@@ -211,7 +231,7 @@ async function planText(fs: ReadFs, repoPath: string, intent: TextIntent): Promi
     expected: [],
     apply: async (ctx) => {
       const backupPath = existed ? await ctx.backup.backup(intent.path) : undefined;
-      await atomicWrite(ctx.fs, intent.path, intent.content);
+      await atomicWrite(ctx.fs, intent.path, intent.content, createOptions);
       return { status: "written", backupPath };
     },
   };
@@ -268,7 +288,7 @@ function noopPlan(scope: FileChangePlan["scope"], path: string, summary: string)
 async function planWrites(
   fs: ReadFs,
   repoPath: string,
-  intents: readonly ProjectWriteIntent[],
+  intents: readonly WriteIntent[],
 ): Promise<FileChangePlan[]> {
   const plans: FileChangePlan[] = [];
   for (const intent of intents) {
@@ -379,7 +399,39 @@ async function initFlow(opts: InitOptions, deps: InitDeps): Promise<number> {
     ? gitignoreLines({ mode: generated.mode, repoPath, generatedPaths: generated.paths })
     : undefined;
 
-  let intents = draftToIntents(draft, { repoPath, force: opts.force, gitignore: ignoreLines });
+  let intents: readonly WriteIntent[] = draftToIntents(draft, {
+    repoPath,
+    force: opts.force,
+    gitignore: ignoreLines,
+  });
+
+  // User-scope file (U4, U5). mergeUserConfig validates an existing file first, so an invalid one fails before any write.
+  const userPath = join(userDir, "yoke.yaml");
+  let userAdded = false;
+  if (draft.user !== undefined) {
+    const existingUser = await readTextIfExists(fs, userPath);
+    const merge = mergeUserConfig(
+      existingUser === undefined ? undefined : { text: existingUser, path: userPath },
+      draft.user,
+      userPath,
+    );
+    notes.push(...merge.notes, ...merge.conflicts);
+    userAdded = merge.added.length > 0;
+    if (merge.content !== undefined) {
+      intents = [
+        ...intents,
+        {
+          kind: "text",
+          scope: "user",
+          path: userPath,
+          content: merge.content,
+          ifExists: "overwrite-with-backup",
+          mode: 0o600,
+        },
+      ];
+    }
+  }
+
   const agentsPath = join(repoPath, "AGENTS.md");
   if (draft.agents !== undefined && !opts.force) {
     const existing = await readTextIfExists(fs, agentsPath);
@@ -396,7 +448,7 @@ async function initFlow(opts: InitOptions, deps: InitDeps): Promise<number> {
         throw new CancelledError();
       }
       intents = intents.map(
-        (intent): ProjectWriteIntent =>
+        (intent): WriteIntent =>
           intent.kind === "text" && intent.path === agentsPath
             ? { ...intent, ifExists: "overwrite-with-backup" }
             : intent,
@@ -435,5 +487,8 @@ async function initFlow(opts: InitOptions, deps: InitDeps): Promise<number> {
   }
   deps.io.stdout(`harnesses: ${(draft.project.harnesses ?? []).join(", ") || "(none)"}\n`);
   deps.io.stdout("next: yoke sync\n");
+  if (userAdded) {
+    deps.io.stdout("next: yoke sync --global\n");
+  }
   return EXIT_OK;
 }

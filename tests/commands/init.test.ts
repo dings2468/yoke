@@ -2,7 +2,7 @@
  * tests/commands/init.test.ts: `runInit` against a temp repo, a fake adapter, a scripted git exec, and fake prompts.
  * Nothing here touches the real home directory or a real harness binary.
  */
-import { mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -183,13 +183,13 @@ describe("runInit, non-interactive", () => {
     expect(out).toContain("next: yoke sync");
   });
 
-  it("does not write .yoke/ state or any file under the home directory", async () => {
+  it("does not write .yoke/ state, and under home writes only the user-scope yoke.yaml", async () => {
     await seedNativeFile();
     await runInit({ ...DEFAULT_OPTS }, makeDeps());
 
     expect(await listRepo()).not.toContain(".yoke");
-    const homeEntries = await readdir(home);
-    expect(homeEntries.filter((entry) => entry !== "backups")).toEqual([]);
+    expect(await readdir(home)).toEqual([".config"]);
+    expect(await readdir(join(home, ".config", "yoke"))).toEqual(["yoke.yaml"]);
   });
 
   it("skips yoke.local.yaml when there is nothing local to protect", async () => {
@@ -350,5 +350,95 @@ describe("runInit, interactive", () => {
     expect(code).toBe(EXIT_INTERRUPTED);
     expect(await readFile(join(repo, "AGENTS.md"), "utf8")).toBe("# mine\n");
     expect(await listRepo()).not.toContain("yoke.yaml");
+  });
+});
+
+describe("runInit, user-scope yoke.yaml", () => {
+  const userDir = (): string => join(home, ".config", "yoke");
+  const userPath = (): string => join(userDir(), "yoke.yaml");
+
+  /** Text of every file under a directory, recursively. A missing directory gives an empty list. */
+  async function filesUnder(dir: string): Promise<string[]> {
+    const entries = await readdir(dir, { withFileTypes: true }).catch(() => []);
+    const texts: string[] = [];
+    for (const entry of entries) {
+      const path = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        texts.push(...(await filesUnder(path)));
+      } else if (entry.isFile()) {
+        texts.push(await readFile(path, "utf8"));
+      }
+    }
+    return texts;
+  }
+
+  it("creates the user-scope yoke.yaml with the user server, mode 0600, and keeps it out of the project file", async () => {
+    await seedNativeFile();
+    const code = await runInit({ ...DEFAULT_OPTS }, makeDeps());
+
+    expect(code).toBe(EXIT_OK);
+    const user = await readFile(userPath(), "utf8");
+    expect(user).toContain("personal");
+    expect((await stat(userPath())).mode & 0o777).toBe(0o600);
+    expect(await readFile(join(repo, "yoke.yaml"), "utf8")).not.toContain("personal");
+    expect(stdout.join("")).toContain(`written: ${userPath()}`);
+    expect(stdout.join("")).toContain("next: yoke sync --global");
+  });
+
+  it("keeps an existing user file's comment and servers, adds the missing one, and backs up the original", async () => {
+    await seedNativeFile();
+    const original =
+      "version: 1\n# my servers\nmcps:\n  other:\n    transport: stdio\n    command: uvx\n";
+    await mkdir(userDir(), { recursive: true });
+    await writeFile(userPath(), original, "utf8");
+    const code = await runInit({ ...DEFAULT_OPTS }, makeDeps());
+
+    expect(code).toBe(EXIT_OK);
+    const user = await readFile(userPath(), "utf8");
+    expect(user).toContain("# my servers");
+    expect(user).toContain("other:");
+    expect(user).toContain("personal:");
+    expect(await filesUnder(join(userDir(), "backups"))).toContain(original);
+    expect(stdout.join("")).toContain(`written: ${userPath()} (backup: `);
+  });
+
+  it("makes the user plan a noop on a rerun with --force and does not back the user file up again", async () => {
+    await seedNativeFile();
+    await runInit({ ...DEFAULT_OPTS }, makeDeps());
+    const first = await readFile(userPath(), "utf8");
+    stdout = [];
+    const code = await runInit({ ...DEFAULT_OPTS, force: true }, makeDeps());
+
+    expect(code).toBe(EXIT_OK);
+    expect(await readFile(userPath(), "utf8")).toBe(first);
+    expect(stdout.join("")).not.toContain(userPath());
+    expect(stdout.join("")).not.toContain("next: yoke sync --global");
+  });
+
+  it("keeps a conflicting existing entry unchanged, prints a note, and writes nothing", async () => {
+    await seedNativeFile();
+    const original =
+      "version: 1\nmcps:\n  personal:\n    transport: stdio\n    command: other-bin\n";
+    await mkdir(userDir(), { recursive: true });
+    await writeFile(userPath(), original, "utf8");
+    const code = await runInit({ ...DEFAULT_OPTS }, makeDeps());
+
+    expect(code).toBe(EXIT_OK);
+    expect(await readFile(userPath(), "utf8")).toBe(original);
+    expect(stdout.join("")).toContain(
+      `note: user server "personal" already in ${userPath()} with a different definition`,
+    );
+    expect(await readdir(userDir())).toEqual(["yoke.yaml"]);
+  });
+
+  it("fails with exit 1 and writes nothing when the existing user file is invalid", async () => {
+    await seedNativeFile();
+    await mkdir(userDir(), { recursive: true });
+    await writeFile(userPath(), "version: 2\n", "utf8");
+    const code = await runInit({ ...DEFAULT_OPTS }, makeDeps());
+
+    expect(code).toBe(EXIT_PROBLEMS);
+    expect(await readFile(userPath(), "utf8")).toBe("version: 2\n");
+    expect(await listRepo()).toEqual(["ALPHA.md"]);
   });
 });
