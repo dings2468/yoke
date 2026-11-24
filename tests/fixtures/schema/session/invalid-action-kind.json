@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "id": "bad-action-kind",
+  "createdAt": "2026-11-24T10:00:00Z",
+  "sourceHarness": "claude",
+  "repoPath": "/workspaces/example",
+  "git": {
+    "branch": "main",
+    "statusShort": "",
+    "diffStat": ""
+  },
+  "turns": [
+    {
+      "role": "assistant",
+      "content": "Wrote a file.",
+      "actions": [{ "kind": "write", "summary": "Wrote src/new.ts" }]
+    }
+  ]
+}

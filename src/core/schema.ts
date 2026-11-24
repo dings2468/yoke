@@ -63,5 +63,48 @@ export const IsoDateTimeSchema = z.iso.datetime({ offset: true });
 // #endregion S2 state
 
 // #region S3 session
-// (S3 content)
+export const SESSION_ACTION_KINDS = ["read", "edit", "command", "search", "mcp", "other"] as const;
+export const SessionActionKindSchema = z.enum(SESSION_ACTION_KINDS);
+export type SessionActionKind = z.infer<typeof SessionActionKindSchema>;
+
+/** Compact, single-line, human-readable summary (invariant 6), for example "Edited src/auth.ts (+14/-3)". */
+export const SessionActionSchema = z.strictObject({
+  kind: SessionActionKindSchema,
+  summary: z
+    .string()
+    .min(1)
+    .max(300)
+    .regex(/^[^\r\n]*$/, "summary must be a single line"),
+});
+export type SessionAction = z.infer<typeof SessionActionSchema>;
+
+/** Strict: unknown keys such as `thinking` or `signature` are rejected (invariant 6). */
+export const SessionTurnSchema = z.strictObject({
+  role: z.enum(["user", "assistant"]),
+  timestamp: IsoDateTimeSchema.optional(),
+  content: z.string(),
+  actions: z.array(SessionActionSchema).optional(),
+});
+export type SessionTurn = z.infer<typeof SessionTurnSchema>;
+
+export const SessionGitSchema = z.strictObject({
+  branch: z.string(), // "" allowed (detached HEAD / unborn)
+  statusShort: z.string(), // "" = clean
+  diffStat: z.string(), // "" when session.includeGitDiffStat is false
+});
+export type SessionGit = z.infer<typeof SessionGitSchema>;
+
+/** File-name safe: the id becomes .yoke/sessions/<id>.json, so path traversal is impossible. */
+export const SessionIdSchema = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/);
+
+export const YokeSessionIRSchema = z.strictObject({
+  version: z.literal(1),
+  id: SessionIdSchema,
+  createdAt: IsoDateTimeSchema,
+  sourceHarness: HarnessNameSchema,
+  repoPath: z.string().min(1),
+  git: SessionGitSchema,
+  turns: z.array(SessionTurnSchema),
+});
+export type YokeSessionIR = z.infer<typeof YokeSessionIRSchema>;
 // #endregion S3 session
