@@ -9,6 +9,7 @@
 import { isAbsolute, join } from "node:path";
 import type {
   AdapterContext,
+  ApplyContext,
   ApplyResult,
   FileChangePlan,
   HarnessAdapter,
@@ -24,7 +25,7 @@ import {
   stateEntryFor,
 } from "./drift.js";
 import type { Fs, ReadFs } from "./fs-safe.js";
-import { readTextIfExists, toReadFs } from "./fs-safe.js";
+import { atomicWrite, createBackupSession, readTextIfExists, toReadFs } from "./fs-safe.js";
 import type { Exec } from "./git.js";
 import type { ResolvedYokeConfig, Scope, StateEntry, StateKey, YokeStateLock } from "./schema.js";
 import { HarnessNameSchema, ScopeSchema, stateKey, YokeStateLockSchema } from "./schema.js";
@@ -656,3 +657,112 @@ export async function buildSyncPlan(req: PlanRequest): Promise<SyncPlan> {
   };
 }
 // #endregion P6 buildSyncPlan
+
+// #region P7 executePlan
+/**
+ * D3: the drift gate. Clear when there are no reasons; forced when the plan is forced; otherwise `confirm` decides.
+ * `confirm` is called at most once, and only when there are reasons and the plan is not forced.
+ */
+export async function decideGate(
+  plan: SyncPlan,
+  confirm: ConfirmDrift | undefined,
+): Promise<GateOutcome> {
+  if (plan.gate.length === 0) return { kind: "clear" };
+  if (plan.force) return { kind: "forced", reasons: plan.gate };
+  if (confirm === undefined) {
+    return { kind: "refused", reasons: plan.gate, interactive: false, drift: plan.drift };
+  }
+  if (await confirm(plan)) return { kind: "confirmed", reasons: plan.gate };
+  return { kind: "refused", reasons: plan.gate, interactive: true, drift: plan.drift };
+}
+
+/**
+ * The only caller of FileChangePlan.apply in yoke. A refused gate returns before any write. Otherwise every
+ * non-noop plan is applied in order with one backup session, and the lock files are written last, each
+ * atomically. A throwing apply stops the run and writes no lock.
+ */
+export async function executePlan(input: ExecuteInput): Promise<SyncResult> {
+  const { plan, fs, now, confirm } = input;
+  const gate = await decideGate(plan, confirm);
+  if (gate.kind === "refused") {
+    return {
+      status: "refused",
+      gate,
+      applied: [],
+      locksWritten: [],
+      backupDir: undefined,
+      warnings: plan.warnings,
+    };
+  }
+
+  const backup = createBackupSession({ fs, root: plan.backupRoot, now });
+  const ctx: ApplyContext = { fs, backup };
+  const applied: AppliedChange[] = [];
+  const notes: string[] = [];
+  const fallen: { readonly key: StateKey; readonly target: ExpectedTarget }[] = [];
+
+  for (const change of plan.changes) {
+    const { harness, plan: planned } = change;
+    if (planned.action === "noop") {
+      applied.push({
+        harness,
+        path: planned.path,
+        action: planned.action,
+        result: { status: "unchanged", backupPath: undefined },
+      });
+      continue;
+    }
+    let result: ApplyResult;
+    try {
+      result = await planned.apply(ctx);
+    } catch (error: unknown) {
+      return {
+        status: "failed",
+        gate,
+        applied,
+        failure: { harness, path: planned.path, error },
+        locksWritten: [],
+        backupDir: backup.dir(),
+        warnings: collectWarnings([plan.warnings, notes]),
+      };
+    }
+    applied.push({ harness, path: planned.path, action: planned.action, result });
+    if (result.status === "fallback") {
+      for (const target of planned.expected) {
+        if (target.kind === "instructions") {
+          fallen.push({ key: stateKey(harness, target.scope), target });
+        }
+      }
+      notes.push(`${planned.path}: ${result.detail ?? "fallback"}; previous lock value kept`);
+    }
+  }
+
+  const locksWritten: string[] = [];
+  for (const lockUpdate of plan.locks) {
+    const update = carryOverFallbacks(
+      lockUpdate,
+      fallen.filter((entry) => lockFileFor(entry.target.scope) === lockUpdate.file),
+    );
+    if (!update.changed) continue;
+    if (update.previous.status !== "missing") {
+      await backup.backup(update.path);
+    }
+    const lock: YokeStateLock = {
+      version: 1,
+      lastSyncedAt: now().toISOString(),
+      harnesses: update.entries,
+    };
+    await atomicWrite(fs, update.path, serializeLock(lock));
+    locksWritten.push(update.path);
+  }
+
+  return {
+    status: "applied",
+    gate,
+    applied,
+    locksWritten,
+    backupDir: backup.dir(),
+    warnings: collectWarnings([plan.warnings, notes]),
+  };
+}
+// #endregion P7 executePlan
