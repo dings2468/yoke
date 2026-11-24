@@ -8,7 +8,10 @@ import type {
   McpServerDefinition,
   McpSseServer,
   NativeInstructions,
+  NativeScopeState,
   Scope,
+  StateEntry,
+  StateKey,
 } from "./schema.js";
 
 // #region DR1 hashing
@@ -134,3 +137,217 @@ export interface DesiredScopeState {
 }
 
 // #endregion DR1 desired state
+
+// #region DR2 diff
+
+/** Desired state of one scope, with the duplicate-key checks applied while grouping. */
+interface MutableScopeGroup {
+  mcps?: Map<string, McpServerDefinition>;
+  instructions?: NativeInstructions;
+  ownedNames?: Map<string, readonly string[]>;
+}
+
+function compareCodeUnits(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
+function sortedUnion(lists: readonly (readonly string[])[]): string[] {
+  return [...new Set(lists.flat())].sort(compareCodeUnits);
+}
+
+/**
+ * Group a plan's expected targets into desired state per scope (D5). Several `mcps` targets of one scope are merged;
+ * a server name repeated in one scope throws. A second instructions target or a repeated owned-names list throws.
+ */
+export function groupExpected(
+  targets: readonly ExpectedTarget[],
+): Partial<Record<Scope, DesiredScopeState>> {
+  const groups = new Map<Scope, MutableScopeGroup>();
+  for (const target of targets) {
+    const group = groups.get(target.scope) ?? {};
+    groups.set(target.scope, group);
+    switch (target.kind) {
+      case "mcps": {
+        const mcps = group.mcps ?? new Map<string, McpServerDefinition>();
+        group.mcps = mcps;
+        for (const [name, def] of Object.entries(target.mcps)) {
+          if (mcps.has(name)) {
+            throw new Error(`duplicate MCP server ${name} in ${target.scope} scope`);
+          }
+          mcps.set(name, def);
+        }
+        break;
+      }
+      case "instructions":
+        if (group.instructions !== undefined) {
+          throw new Error(`duplicate instructions target in ${target.scope} scope`);
+        }
+        group.instructions = target.instructions;
+        break;
+      case "owned-names": {
+        const owned = group.ownedNames ?? new Map<string, readonly string[]>();
+        group.ownedNames = owned;
+        if (owned.has(target.list)) {
+          throw new Error(`duplicate owned-names list ${target.list} in ${target.scope} scope`);
+        }
+        owned.set(target.list, [...target.names]);
+        break;
+      }
+    }
+  }
+  const out: Partial<Record<Scope, DesiredScopeState>> = {};
+  for (const [scope, group] of groups) {
+    out[scope] = {
+      ...(group.mcps !== undefined ? { mcps: Object.fromEntries(group.mcps) } : {}),
+      ...(group.instructions !== undefined ? { instructions: group.instructions } : {}),
+      ...(group.ownedNames !== undefined
+        ? { ownedNames: Object.fromEntries(group.ownedNames) }
+        : {}),
+    };
+  }
+  return out;
+}
+
+/**
+ * Lock entry for one scope, as written after a sync (SPEC §4.3). `ownedNames` appears only when some list is non-empty;
+ * names and list ids are sorted and empty lists are left out.
+ */
+export function stateEntryFor(desired: DesiredScopeState): StateEntry {
+  const mcpHashes = Object.fromEntries(
+    Object.entries(desired.mcps ?? {})
+      .sort(([a], [b]) => compareCodeUnits(a, b))
+      .map(([name, def]): [string, string] => [name, hashMcp(def)]),
+  );
+  const instructionsHash =
+    desired.instructions === undefined ? null : hashInstructions(desired.instructions);
+  const lists = Object.entries(desired.ownedNames ?? {})
+    .filter(([, names]) => names.length > 0)
+    .sort(([a], [b]) => compareCodeUnits(a, b))
+    .map(([list, names]): [string, string[]] => [list, [...names].sort(compareCodeUnits)]);
+  return {
+    mcpHashes,
+    instructionsHash,
+    ...(lists.length > 0 ? { ownedNames: Object.fromEntries(lists) } : {}),
+  };
+}
+
+/** Drift status of one entry: `in-sync`/`stale` are clean; `create`, `added`, `modified`, `removed` are reported. */
+export type EntryStatus = "in-sync" | "stale" | "create" | "added" | "modified" | "removed";
+
+/** Statuses that count as drift (D5). */
+export const DRIFT_STATUSES: readonly EntryStatus[] = ["added", "modified", "removed"];
+
+/**
+ * Classify one entry from its hashes (D5 order). `native` is the hash of the file on disk, `lock` the hash recorded at
+ * the last sync, `desired` the hash of what yoke would write now. An absent hash means the item is missing.
+ */
+export function classifyEntry(h: {
+  readonly native?: string;
+  readonly lock?: string;
+  readonly desired?: string;
+}): EntryStatus {
+  if (h.native !== undefined && h.native === h.desired) {
+    return "in-sync";
+  }
+  if (h.native === undefined && h.lock === undefined) {
+    return "create";
+  }
+  if (h.native !== undefined && h.native === h.lock) {
+    return "stale";
+  }
+  if (h.native === undefined) {
+    return "removed";
+  }
+  if (h.lock === undefined) {
+    return "added";
+  }
+  return "modified";
+}
+
+export interface McpDriftEntry {
+  readonly name: string;
+  readonly status: EntryStatus;
+  readonly native: McpServerDefinition | undefined;
+  readonly desired: McpServerDefinition | undefined;
+}
+
+export interface InstructionsDriftEntry {
+  readonly status: EntryStatus;
+  readonly path: string;
+  readonly native: NativeInstructions | undefined;
+  readonly desired: NativeInstructions;
+}
+
+export interface ScopeDriftInput {
+  readonly key: StateKey;
+  /** undefined = the harness did not read this tier (treated as no MCPs and no instructions). */
+  readonly native: NativeScopeState | undefined;
+  /** undefined = no lock entry for this key yet. */
+  readonly lock: StateEntry | undefined;
+  readonly desired: DesiredScopeState;
+}
+
+export interface ScopeDriftReport {
+  readonly key: StateKey;
+  readonly mcps: readonly McpDriftEntry[];
+  readonly instructions: InstructionsDriftEntry | undefined;
+  readonly hasDrift: boolean;
+}
+
+export interface DriftReport {
+  readonly scopes: readonly ScopeDriftReport[];
+  readonly hasDrift: boolean;
+}
+
+/**
+ * Compare native, lock, and desired for one scope (SPEC §5 step 2, detect and report only). MCPs are compared only when
+ * `desired.mcps` is set; instructions only when `desired.instructions` is set. A `null` lock hash counts as absent.
+ * `ownedNames` is bookkeeping and is never compared.
+ */
+export function diffScope(input: ScopeDriftInput): ScopeDriftReport {
+  const mcps: McpDriftEntry[] = [];
+  if (input.desired.mcps !== undefined) {
+    const nativeMap = new Map(Object.entries(input.native?.mcps ?? {}));
+    const lockMap = new Map(Object.entries(input.lock?.mcpHashes ?? {}));
+    const desiredMap = new Map(Object.entries(input.desired.mcps));
+    for (const name of sortedUnion([
+      [...nativeMap.keys()],
+      [...lockMap.keys()],
+      [...desiredMap.keys()],
+    ])) {
+      const native = nativeMap.get(name);
+      const desired = desiredMap.get(name);
+      const status = classifyEntry({
+        native: native === undefined ? undefined : hashMcp(native),
+        lock: lockMap.get(name),
+        desired: desired === undefined ? undefined : hashMcp(desired),
+      });
+      mcps.push({ name, status, native, desired });
+    }
+  }
+
+  let instructions: InstructionsDriftEntry | undefined;
+  if (input.desired.instructions !== undefined) {
+    const desired = input.desired.instructions;
+    const native = input.native?.instructions;
+    const status = classifyEntry({
+      native: native === undefined ? undefined : hashInstructions(native),
+      lock: input.lock?.instructionsHash ?? undefined,
+      desired: hashInstructions(desired),
+    });
+    instructions = { status, path: desired.path, native, desired };
+  }
+
+  const hasDrift =
+    mcps.some((entry) => DRIFT_STATUSES.includes(entry.status)) ||
+    (instructions !== undefined && DRIFT_STATUSES.includes(instructions.status));
+  return { key: input.key, mcps, instructions, hasDrift };
+}
+
+/** Run `diffScope` over every scope; `hasDrift` is true when any scope reports drift. Input order is kept. */
+export function detectDrift(inputs: readonly ScopeDriftInput[]): DriftReport {
+  const scopes = inputs.map((input) => diffScope(input));
+  return { scopes, hasDrift: scopes.some((scope) => scope.hasDrift) };
+}
+
+// #endregion DR2 diff
