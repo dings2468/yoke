@@ -8,6 +8,14 @@
 import { randomBytes } from "node:crypto";
 import * as fsp from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative } from "node:path";
+import {
+  type JsonKeyPath,
+  JsonPatchError,
+  type JsonPatchResult,
+  type JsonValue,
+  parseJsonText,
+  patchJsonKey,
+} from "./json-text.js";
 
 export interface FileStat {
   readonly isFile: boolean;
@@ -388,6 +396,162 @@ export async function safeSymlink(
   }
 
   return { kind: "linked", target: rel, backupPath };
+}
+
+// #endregion
+
+// #region F3 json
+
+export {
+  type JsonKeyPath,
+  JsonPatchError,
+  type JsonPatchResult,
+  type JsonValue,
+  patchJsonKey,
+} from "./json-text.js";
+
+/** Converts a JsonPatchError into an FsSafeError that keeps the cause and the path. Other errors pass through. */
+function asFsSafeJsonError(path: string, err: unknown): unknown {
+  if (err instanceof JsonPatchError) {
+    return new FsSafeError(err.message, path, { cause: err });
+  }
+  return err;
+}
+
+/** Reads and parses a JSON file. Returns undefined when the file is missing. Invalid JSON throws FsSafeError. */
+export async function readJsonIfExists(
+  fs: ReadFs,
+  path: string,
+): Promise<{ readonly text: string; readonly value: JsonValue } | undefined> {
+  const text = await readTextIfExists(fs, path);
+  if (text === undefined) return undefined;
+  try {
+    return { text, value: parseJsonText(text) };
+  } catch (err: unknown) {
+    throw asFsSafeJsonError(path, err);
+  }
+}
+
+export interface PlannedJsonPatch {
+  readonly path: string;
+  readonly keyPath: JsonKeyPath;
+  readonly value: JsonValue | undefined;
+  /** File text when planned. undefined means the file did not exist. */
+  readonly before: string | undefined;
+  readonly after: string;
+  readonly changed: boolean;
+  readonly strategy: JsonPatchResult["strategy"];
+}
+
+/** Plans a key-scoped JSON edit. Reads only; nothing is written. */
+export async function planJsonPatch(
+  fs: ReadFs,
+  path: string,
+  keyPath: JsonKeyPath,
+  value: JsonValue | undefined,
+): Promise<PlannedJsonPatch> {
+  const before = await readTextIfExists(fs, path);
+  let result: JsonPatchResult;
+  try {
+    result = patchJsonKey(before, keyPath, value);
+  } catch (err: unknown) {
+    throw asFsSafeJsonError(path, err);
+  }
+  return {
+    path,
+    keyPath,
+    value,
+    before,
+    after: result.content,
+    changed: result.changed,
+    strategy: result.strategy,
+  };
+}
+
+export interface CommitResult {
+  readonly written: boolean;
+  readonly rebased: boolean;
+  readonly backupPath: string | undefined;
+}
+
+/**
+ * Applies a planned JSON patch. If the file changed since planning, the key is re-patched on the
+ * current text (D7), so unrelated keys written by another process survive.
+ */
+export async function commitJsonPatch(
+  fs: Fs,
+  plan: PlannedJsonPatch,
+  opts: { readonly backup: BackupSession },
+): Promise<CommitResult> {
+  if (!plan.changed) {
+    return { written: false, rebased: false, backupPath: undefined };
+  }
+
+  const current = await readTextIfExists(fs, plan.path);
+  let after = plan.after;
+  const rebased = current !== plan.before;
+  if (rebased) {
+    let result: JsonPatchResult;
+    try {
+      result = patchJsonKey(current, plan.keyPath, plan.value);
+    } catch (err: unknown) {
+      throw asFsSafeJsonError(plan.path, err);
+    }
+    if (!result.changed) {
+      return { written: false, rebased: true, backupPath: undefined };
+    }
+    after = result.content;
+  }
+
+  const backupPath =
+    current === undefined ? undefined : await opts.backup.backup(plan.path, { kind: "content" });
+  await atomicWrite(fs, plan.path, after);
+  return { written: true, rebased, backupPath };
+}
+
+export interface PlannedTextWrite {
+  readonly path: string;
+  readonly before: string | undefined;
+  readonly after: string;
+  readonly changed: boolean;
+}
+
+/** Plans a whole-file text write. Reads only; nothing is written. */
+export async function planTextWrite(
+  fs: ReadFs,
+  path: string,
+  after: string,
+): Promise<PlannedTextWrite> {
+  const before = await readTextIfExists(fs, path);
+  return { path, before, after, changed: before !== after };
+}
+
+/** Thrown when a file changed between planning and commit and the whole file would be overwritten. */
+export class ConcurrentModificationError extends FsSafeError {
+  constructor(path: string) {
+    super("file changed after it was planned", path);
+    this.name = "ConcurrentModificationError";
+  }
+}
+
+/** Applies a planned whole-file write. Throws ConcurrentModificationError if the file changed since planning. */
+export async function commitTextWrite(
+  fs: Fs,
+  plan: PlannedTextWrite,
+  opts: { readonly backup: BackupSession },
+): Promise<CommitResult> {
+  const current = await readTextIfExists(fs, plan.path);
+  if (current !== plan.before) {
+    throw new ConcurrentModificationError(plan.path);
+  }
+  if (!plan.changed) {
+    return { written: false, rebased: false, backupPath: undefined };
+  }
+
+  const backupPath =
+    current === undefined ? undefined : await opts.backup.backup(plan.path, { kind: "content" });
+  await atomicWrite(fs, plan.path, plan.after);
+  return { written: true, rebased: false, backupPath };
 }
 
 // #endregion
