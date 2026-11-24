@@ -22,7 +22,7 @@ Read `SPEC.md` before making architectural changes. `SPEC.md` is the source of t
 ## Non-Negotiable Safety Invariants
 Violating any of these is a blocking bug:
 1. **Zero-Clobber JSON Patching:** Never overwrite `~/.claude.json` or any shared harness config wholesale. Use `src/core/fs-safe.ts` to read, parse, patch *only* the target key (e.g., `mcpServers`), and write atomically (`.tmp` + `rename`).
-2. **Automatic Backups:** Always back up. Before `yoke` overwrites or patches any file, copy the original to `~/.config/yoke/backups/<timestamp>/`. This includes yoke-managed files when drift is detected and the user chooses overwrite, and JSON-patched shared files (`~/.claude.json`, agy `mcp_config.json`). A file is "yoke-managed" if it carries the `GENERATED` header or is a symlink yoke created.
+2. **Automatic Backups:** Always back up before `yoke` overwrites or patches any file, including yoke-managed files. Copy the original to `<userConfigDir>/backups/<timestamp>/` as SPEC §8.2 describes.
 3. **Dry-Run Parity:** `syncStatic()` must return `FileChangePlan[]` without performing disk writes. `--dry-run` must execute the exact same planning pipeline and simply skip calling `apply()`.
 4. **No Secret Leakage:** Never resolve or expand `${ENV_VAR}` values into plaintext in generated project files. Preserve variable references in the target harness's native syntax.
 5. **No Silent Overwrites:** Before overwriting a native harness file, diff against `.yoke/state.json` via `src/core/drift.ts`. If native drift is detected, prompt the user (or fail in non-interactive mode unless `--force` is passed).
