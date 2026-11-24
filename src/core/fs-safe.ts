@@ -7,7 +7,7 @@
  */
 import { randomBytes } from "node:crypto";
 import * as fsp from "node:fs/promises";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, isAbsolute, join, relative } from "node:path";
 
 export interface FileStat {
   readonly isFile: boolean;
@@ -182,3 +182,212 @@ export async function atomicWrite(
 
   return { writtenPath };
 }
+
+// #region F2 backup+symlink
+
+export interface BackupOptions {
+  readonly fs: Fs;
+  /** absolute, e.g. <userConfigDir>/backups */
+  readonly root: string;
+  readonly now: () => Date;
+}
+
+export interface BackupSession {
+  /** Copies the current file (content, following links) or the link itself (kind "link"). Returns the backup path, or undefined if the source is missing. */
+  backup(path: string, opts?: { readonly kind?: "content" | "link" }): Promise<string | undefined>;
+  /** Backup directory for this session. Set after the first successful backup. */
+  readonly dir: () => string | undefined;
+}
+
+/** Formats a date as a Windows-safe, sortable directory name (`:` and `.` become `-`). */
+export function formatBackupTimestamp(d: Date): string {
+  return d.toISOString().replace(/[:.]/g, "-");
+}
+
+/**
+ * Maps an absolute source path to its mirror path inside a backup directory.
+ * `/home/u/app.json` becomes `home/u/app.json`, and `C:\a\b` becomes `C/a/b`.
+ */
+export function backupRelativePath(absPath: string): string {
+  const drive = /^([A-Za-z]):[\\/]/.exec(absPath);
+  let rel: string;
+  if (drive?.[1] !== undefined) {
+    rel = `${drive[1]}/${absPath.slice(3).replace(/\\/g, "/")}`;
+  } else if (absPath.startsWith("/")) {
+    rel = absPath.replace(/^\/+/, "");
+  } else {
+    throw new FsSafeError("backup path must be absolute", absPath);
+  }
+  const segments = rel.split("/");
+  if (rel === "" || segments.some((segment) => segment === "" || segment === "..")) {
+    throw new FsSafeError("backup path has empty or parent segments", absPath);
+  }
+  return rel;
+}
+
+export function createBackupSession(opts: BackupOptions): BackupSession {
+  const { fs, root, now } = opts;
+  let sessionDir: string | undefined;
+  const copied = new Map<string, string>();
+
+  async function ensureSessionDir(): Promise<string> {
+    if (sessionDir !== undefined) return sessionDir;
+    await fs.mkdir(root, { recursive: true });
+    const base = formatBackupTimestamp(now());
+    for (let attempt = 0; attempt < 100; attempt++) {
+      const name = attempt === 0 ? base : `${base}-${attempt}`;
+      const candidate = join(root, name);
+      try {
+        await fs.mkdir(candidate, { recursive: false, mode: 0o700 });
+        sessionDir = candidate;
+        return candidate;
+      } catch (err: unknown) {
+        if (errorCode(err) !== "EEXIST") throw err;
+      }
+    }
+    throw new FsSafeError("could not create a unique backup directory", root);
+  }
+
+  return {
+    dir: () => sessionDir,
+    async backup(path, backupOpts = {}) {
+      const kind = backupOpts.kind ?? "content";
+      const rel = backupRelativePath(path);
+
+      const already = copied.get(path);
+      if (already !== undefined) return already;
+
+      let st: FileStat;
+      try {
+        st = kind === "link" ? await fs.lstat(path) : await fs.stat(path);
+      } catch (err: unknown) {
+        if (isNotFound(err)) return undefined;
+        throw err;
+      }
+      if (st.isDirectory) {
+        throw new FsSafeError("cannot back up a directory", path);
+      }
+      if (kind === "link" && !st.isSymbolicLink) {
+        throw new FsSafeError("expected a symbolic link", path);
+      }
+
+      const dir = await ensureSessionDir();
+      const dest = join(dir, rel);
+      await fs.mkdir(dirname(dest), { recursive: true, mode: 0o700 });
+      if (kind === "link") {
+        await fs.symlink(await fs.readlink(path), dest);
+      } else {
+        await fs.copyFile(path, dest);
+      }
+      copied.set(path, dest);
+      return dest;
+    },
+  };
+}
+
+export type SymlinkInspection =
+  | { readonly state: "missing" }
+  | { readonly state: "same-link" }
+  | { readonly state: "other-link"; readonly target: string }
+  | { readonly state: "file" }
+  | { readonly state: "other" };
+
+/** Relative link text for `linkPath` pointing at `targetPath`. Both must be absolute. */
+export function relativeLinkTarget(linkPath: string, targetPath: string): string {
+  if (!isAbsolute(linkPath)) throw new FsSafeError("link path must be absolute", linkPath);
+  if (!isAbsolute(targetPath)) throw new FsSafeError("target path must be absolute", targetPath);
+  return relative(dirname(linkPath), targetPath);
+}
+
+export async function inspectSymlink(
+  fs: ReadFs,
+  linkPath: string,
+  targetPath: string,
+): Promise<SymlinkInspection> {
+  let st: FileStat;
+  try {
+    st = await fs.lstat(linkPath);
+  } catch (err: unknown) {
+    if (isNotFound(err)) return { state: "missing" };
+    throw err;
+  }
+  if (st.isSymbolicLink) {
+    const target = await fs.readlink(linkPath);
+    if (target === relativeLinkTarget(linkPath, targetPath)) return { state: "same-link" };
+    return { state: "other-link", target };
+  }
+  if (st.isFile) return { state: "file" };
+  return { state: "other" };
+}
+
+export type SafeSymlinkResult =
+  | {
+      readonly kind: "linked" | "unchanged";
+      readonly target: string;
+      readonly backupPath: string | undefined;
+    }
+  | {
+      readonly kind: "fallback";
+      readonly reason: "unsupported" | "blocked";
+      readonly detail: string;
+    };
+
+const UNSUPPORTED_SYMLINK_CODES = new Set(["EPERM", "ENOTSUP", "EOPNOTSUPP", "EACCES"]);
+
+/**
+ * Replaces `linkPath` with a relative symlink to `targetPath`. An existing file or foreign link is backed up
+ * first. The original is never removed before the new link exists, because the link is created at a temp
+ * name and then renamed over `linkPath`. Callers run the drift check before calling this.
+ */
+export async function safeSymlink(
+  fs: Fs,
+  linkPath: string,
+  targetPath: string,
+  opts: { readonly backup: BackupSession; readonly tmpSuffix?: () => string },
+): Promise<SafeSymlinkResult> {
+  const rel = relativeLinkTarget(linkPath, targetPath);
+  const inspection = await inspectSymlink(fs, linkPath, targetPath);
+
+  if (inspection.state === "same-link") {
+    return { kind: "unchanged", target: rel, backupPath: undefined };
+  }
+  if (inspection.state === "other") {
+    return {
+      kind: "fallback",
+      reason: "blocked",
+      detail: `${linkPath} is a directory or special file`,
+    };
+  }
+
+  let backupPath: string | undefined;
+  if (inspection.state === "missing") {
+    await fs.mkdir(dirname(linkPath), { recursive: true });
+  } else {
+    backupPath = await opts.backup.backup(linkPath, {
+      kind: inspection.state === "file" ? "content" : "link",
+    });
+  }
+
+  const suffix = opts.tmpSuffix ? opts.tmpSuffix() : randomBytes(4).toString("hex");
+  const tmp = join(dirname(linkPath), `${basename(linkPath)}.${suffix}.yoke.tmp`);
+  try {
+    await fs.symlink(rel, tmp);
+  } catch (err: unknown) {
+    await fs.unlink(tmp).catch(() => {});
+    const code = errorCode(err);
+    if (code !== undefined && UNSUPPORTED_SYMLINK_CODES.has(code)) {
+      return { kind: "fallback", reason: "unsupported", detail: `symlink refused: ${code}` };
+    }
+    throw err;
+  }
+  try {
+    await fs.rename(tmp, linkPath);
+  } catch (err: unknown) {
+    await fs.unlink(tmp).catch(() => {});
+    throw err;
+  }
+
+  return { kind: "linked", target: rel, backupPath };
+}
+
+// #endregion
