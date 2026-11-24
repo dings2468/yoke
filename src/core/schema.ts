@@ -124,7 +124,34 @@ export function isMcpDisabledStub(entry: McpServerEntry): entry is McpDisabledSt
 // #endregion S5 resolved
 
 // #region S6 native
-// (S6 content)
+/** A native instruction target as found on disk: either a real file (content) or a symlink (its target). */
+export const NativeInstructionsSchema = z.discriminatedUnion("kind", [
+  z.strictObject({ kind: z.literal("file"), path: z.string().min(1), content: z.string() }),
+  z.strictObject({
+    kind: z.literal("symlink"),
+    path: z.string().min(1),
+    target: z.string().min(1),
+  }),
+]);
+export type NativeInstructions = z.infer<typeof NativeInstructionsSchema>;
+
+/** One native tier, translated to canonical form. A disabled native entry becomes a full definition with enabled: false. */
+export const NativeScopeStateSchema = z.strictObject({
+  mcps: z.record(McpServerNameSchema, McpServerDefinitionSchema),
+  instructions: NativeInstructionsSchema.optional(),
+});
+export type NativeScopeState = z.infer<typeof NativeScopeStateSchema>;
+
+/**
+ * Result of HarnessAdapter.readNativeState. A key is present only for tiers the harness exposes and the
+ * adapter read. A present key with `mcps: {}` means "read, empty"; an absent key means "not supported or not read".
+ */
+export const PartialYokeConfigSchema = z.strictObject({
+  user: NativeScopeStateSchema.optional(),
+  project: NativeScopeStateSchema.optional(),
+  local: NativeScopeStateSchema.optional(),
+});
+export type PartialYokeConfig = z.infer<typeof PartialYokeConfigSchema>;
 // #endregion S6 native
 
 // #region S7 options
