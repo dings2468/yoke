@@ -1,0 +1,39 @@
+```markdown
+# AGENTS.md — `yoke` Development Guide
+
+Read `SPEC.md` before making architectural changes. `SPEC.md` is the source of truth for schemas, adapter contracts, and CLI behavior.
+
+## Tech Stack & Commands
+- **Runtime:** TypeScript (strict mode, ESM) on Node 20+ / Bun.
+- **Core Libraries:** `zod`, `yaml`, `commander`, `@clack/prompts`, `picocolors`, `vitest`.
+- **Verification:** Run type-checking and tests before finishing any task:
+  ```bash
+  npm run typecheck   # tsc --noEmit
+  npm test            # vitest run
+  ```
+
+## Architecture Rules
+1. **Strict Adapter Isolation:** Harness-specific paths, JSON keys (`type: "http"` vs. `httpUrl`), and session parsers belong **exclusively** inside `src/adapters/<harness>.ts`. Never branch on harness names (`if (name === "claude")`) inside `src/core/` or `src/commands/`.
+2. **Capability-Driven Core:** Every adapter must implement `HarnessAdapter` and declare `HarnessCapabilities` (`src/adapters/base.ts`). Commands must check capabilities before invoking optional methods (`exportLatestSession`, `importAndLaunch`) and degrade gracefully.
+3. **3-Tier Scope Precedence:** Always resolve configuration in strict order: `local` > `project` > `user`. Respect `enabled: false` to disable inherited `user`-level MCP servers.
+4. **Canonical Validation:** Validate all external inputs (`yoke.yaml`, `yoke.local.yaml`, `.yoke/state.json`, `YokeSessionIR`) through Zod schemas in `src/core/schema.ts`.
+
+## Non-Negotiable Safety Invariants
+Violating any of these is a blocking bug:
+1. **Zero-Clobber JSON Patching:** Never overwrite `~/.claude.json` or any shared harness config wholesale. Use `src/core/fs-safe.ts` to read, parse, patch *only* the target key (e.g., `mcpServers`), and write atomically (`.tmp` + `rename`).
+2. **Automatic Backups:** Before modifying any existing file not already managed by `yoke`, copy it to `~/.config/yoke/backups/<timestamp>/`.
+3. **Dry-Run Parity:** `syncStatic()` must return `FileChangePlan[]` without performing disk writes. `--dry-run` must execute the exact same planning pipeline and simply skip calling `apply()`.
+4. **No Secret Leakage:** Never resolve or expand `${ENV_VAR}` values into plaintext in generated project files. Preserve variable references in the target harness's native syntax.
+5. **No Silent Overwrites:** Before overwriting a native harness file, diff against `.yoke/state.json` via `src/core/drift.ts`. If native drift is detected, prompt the user (or fail in non-interactive mode unless `--force` is passed).
+6. **Lossy-but-Clean Session IR:** Never copy provider-specific thinking/thought signatures or raw multi-hundred-line file dumps into `YokeSessionIR`. Flatten tool calls into compact `actions[]` summaries.
+
+## Coding & Testing Standards
+- **No `any`:** Use explicit TypeScript types or Zod-inferred types (`z.infer<typeof ...>`).
+- **Fixture-Based Adapter Tests:** Every adapter change must include `vitest` tests using fixture files in `tests/fixtures/` (never read or write the developer's real `~/.claude.json` or `~/.gemini/` during tests—inject paths or use temp directories).
+- **Test Coverage Priorities:**
+  - Zero-clobber patching of `~/.claude.json` (unrelated keys must survive byte-for-byte in structure).
+  - HTTP/SSE schema translation (`claude` <-> `agy`) and reverse-parsing (`readNativeState`).
+  - 3-way drift detection (`yoke.yaml` vs. `.yoke/state.json` vs. native file).
+  - Conditional block compilation (`<!-- yoke:claude-only -->` / `<!-- yoke:agy-only -->`) vs. symlink fallback.
+
+```
