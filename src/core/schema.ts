@@ -116,7 +116,33 @@ export function isMcpDisabledStub(entry: McpServerEntry): entry is McpDisabledSt
 // #endregion S1 mcp
 
 // #region S4 config
-// (S4 content)
+export const InstructionsConfigSchema = z.strictObject({
+  /** Path to the canonical instructions file, relative to the directory of the yaml file that declares it. */
+  source: z.string().min(1).optional(),
+  preferSymlink: z.boolean().optional(),
+});
+export type InstructionsConfig = z.infer<typeof InstructionsConfigSchema>;
+
+export const SessionConfigSchema = z.strictObject({
+  maxTurns: z.number().int().positive().optional(),
+  includeGitDiffStat: z.boolean().optional(),
+});
+export type SessionConfig = z.infer<typeof SessionConfigSchema>;
+
+export const HarnessListSchema = z
+  .array(HarnessNameSchema)
+  .refine((list) => new Set(list).size === list.length, "duplicate harness name");
+
+/** One scope file. Everything except `version` is optional; there are no defaults here (they are applied after merge). */
+export const YokeConfigSchema = z.strictObject({
+  version: z.literal(1),
+  mode: ModeSchema.optional(),
+  harnesses: HarnessListSchema.optional(),
+  mcps: McpServersSchema.optional(),
+  instructions: InstructionsConfigSchema.optional(),
+  session: SessionConfigSchema.optional(),
+});
+export type YokeConfig = z.infer<typeof YokeConfigSchema>;
 // #endregion S4 config
 
 // #region S5 resolved
