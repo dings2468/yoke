@@ -196,3 +196,76 @@ export function compileInstructions(input: {
   }
   return out;
 }
+
+// #region C2 strategy
+
+export type CompileReason =
+  | "prefer-symlink-off"
+  | "conditional-blocks"
+  | "local-override"
+  | "symlink-unsupported";
+
+export type InstructionStrategy =
+  | { readonly kind: "symlink" }
+  | { readonly kind: "compile"; readonly reasons: readonly [CompileReason, ...CompileReason[]] };
+
+export interface StrategyInput {
+  readonly preferSymlink: boolean;
+  /** Canonical instructions text. */
+  readonly source: string;
+  /** AGENTS.local.md text; undefined means the file is absent (an empty file still counts). */
+  readonly local: string | undefined;
+  /** Default true; false on platforms where the caller knows links fail. */
+  readonly symlinksSupported?: boolean;
+  readonly validTargets?: readonly string[];
+}
+
+/**
+ * Pure decision: symlink only when no compile reason applies (SPEC §4.2).
+ * Both texts are always parsed so malformed tags fail early, even when a symlink would be chosen.
+ */
+export function decideInstructionStrategy(input: StrategyInput): InstructionStrategy {
+  const opts: ParseOptions =
+    input.validTargets === undefined ? {} : { validTargets: input.validTargets };
+  const sourceParsed = parseConditionalBlocks(input.source, opts);
+  if (input.local !== undefined) {
+    parseConditionalBlocks(input.local, opts);
+  }
+
+  const reasons: CompileReason[] = [];
+  if (!input.preferSymlink) {
+    reasons.push("prefer-symlink-off");
+  }
+  if (sourceParsed.blocks.length > 0) {
+    reasons.push("conditional-blocks");
+  }
+  if (input.local !== undefined) {
+    reasons.push("local-override");
+  }
+  if (input.symlinksSupported === false) {
+    reasons.push("symlink-unsupported");
+  }
+
+  const [first, ...rest] = reasons;
+  if (first === undefined) {
+    return { kind: "symlink" };
+  }
+  return { kind: "compile", reasons: [first, ...rest] };
+}
+
+/**
+ * Derives the local override path by inserting ".local" before the last extension of the base name.
+ * A leading dot does not count as an extension separator (".hidden.md" -> ".hidden.local.md").
+ */
+export function localOverridePath(sourcePath: string): string {
+  const slash = Math.max(sourcePath.lastIndexOf("/"), sourcePath.lastIndexOf("\\"));
+  const dir = sourcePath.slice(0, slash + 1);
+  const base = sourcePath.slice(slash + 1);
+  const dot = base.lastIndexOf(".");
+  if (dot > 0) {
+    return `${dir}${base.slice(0, dot)}.local${base.slice(dot)}`;
+  }
+  return `${dir}${base}.local`;
+}
+
+// #endregion C2 strategy
