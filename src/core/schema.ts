@@ -55,7 +55,40 @@ export const IsoDateTimeSchema = z.iso.datetime({ offset: true });
 // #endregion S6 native
 
 // #region S7 options
-// (S7 content)
+/**
+ * Options for HarnessAdapter.syncStatic (SPEC §6). Planning only; adapters never see dry-run or force.
+ * Plain interface, not a Zod schema: these are internal call arguments, not external input.
+ */
+export interface SyncOptions {
+  /**
+   * Absolute repo root. Project and local targets resolve against it (syncStatic has no repoPath parameter).
+   */
+  readonly repoPath: string;
+  /**
+   * Native scopes to plan, in any order. Command mapping (SPEC §7):
+   * `yoke sync` -> ["project", "local"]; `--global` -> ["user"]; `--all` -> ["user", "project", "local"].
+   * The lock is keyed `<harness>:<scope>` (S2), so the adapter must know which scopes it plans.
+   */
+  readonly scopes: readonly Scope[];
+  /**
+   * Non-fatal warnings (for example, a transport or scope a harness cannot represent). Must not throw.
+   * FileChangePlan has no warnings field, and warnings must appear identically in dry-run.
+   */
+  readonly warn: (message: string) => void;
+}
+
+/**
+ * Options for HarnessAdapter.importAndLaunch (SPEC §6, §7 `yoke switch`).
+ * Plain interface, not a Zod schema: these are internal call arguments, not external input.
+ */
+export interface LaunchOptions {
+  /**
+   * Absolute repo root: the cwd for the spawned harness and the base for .yoke/ handoff files.
+   */
+  readonly repoPath: string;
+  /** false for `--no-launch`: materialize the session or handoff files and report the command, without spawning. */
+  readonly launch: boolean;
+}
 // #endregion S7 options
 
 // #region S2 state
