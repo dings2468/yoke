@@ -13,11 +13,17 @@ import type {
   FileChangePlan,
   HarnessAdapter,
 } from "../adapters/base.js";
-import type { DriftReport } from "./drift.js";
+import {
+  canonicalJson,
+  type DesiredScopeState,
+  type DriftReport,
+  type ExpectedTarget,
+  stateEntryFor,
+} from "./drift.js";
 import type { Fs, ReadFs } from "./fs-safe.js";
 import { readTextIfExists, toReadFs } from "./fs-safe.js";
 import type { Exec } from "./git.js";
-import type { ResolvedYokeConfig, Scope, StateKey, YokeStateLock } from "./schema.js";
+import type { ResolvedYokeConfig, Scope, StateEntry, StateKey, YokeStateLock } from "./schema.js";
 import { HarnessNameSchema, ScopeSchema, YokeStateLockSchema } from "./schema.js";
 import {
   defaultScopePaths,
@@ -340,3 +346,135 @@ export function selectHarnesses(
   return { names, warnings };
 }
 // #endregion P4 request and config
+
+// #region P5 pure helpers
+function compareCodeUnits(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
+/** Entries of a lock file as read, as a mutable map keyed by state key. Only an ok load has entries. */
+function previousEntries(previous: LockLoad): Map<string, StateEntry> {
+  return new Map<string, StateEntry>(
+    previous.status === "ok" ? Object.entries(previous.lock.harnesses) : [],
+  );
+}
+
+/** Map to lock entries, keys sorted by code unit. */
+function sortedEntries(map: ReadonlyMap<string, StateEntry>): YokeStateLock["harnesses"] {
+  const sorted = [...map.entries()].sort(([a], [b]) => compareCodeUnits(a, b));
+  return Object.fromEntries(sorted);
+}
+
+/** D5 `changed`: ok compares canonical JSON; corrupt always changes; missing changes only when entries exist. */
+function lockChanged(previous: LockLoad, entries: YokeStateLock["harnesses"]): boolean {
+  switch (previous.status) {
+    case "ok":
+      return canonicalJson(previous.lock.harnesses) !== canonicalJson(entries);
+    case "corrupt":
+      return true;
+    case "missing":
+      return Object.keys(entries).length > 0;
+  }
+}
+
+/**
+ * D6: throws PlanConflictError when a path has more than one non-noop plan, unless all of them come from one
+ * harness and are all composable. Noop plans never conflict.
+ */
+export function checkPathConflicts(changes: readonly PlannedChange[]): void {
+  const byPath = new Map<string, PlannedChange[]>();
+  for (const change of changes) {
+    if (change.plan.action === "noop") continue;
+    const group = byPath.get(change.plan.path) ?? [];
+    group.push(change);
+    byPath.set(change.plan.path, group);
+  }
+  for (const [path, group] of byPath) {
+    if (group.length < 2) continue;
+    const harnesses = [...new Set(group.map((change) => change.harness))];
+    const allComposable = group.every((change) => change.plan.composable === true);
+    if (harnesses.length === 1 && allComposable) continue;
+    throw new PlanConflictError(
+      `more than one plan writes ${path} (${harnesses.join(", ")}) and they cannot be merged`,
+      path,
+    );
+  }
+}
+
+/** D7: flatten the groups in order, dropping exact duplicates and keeping the first occurrence. */
+export function collectWarnings(groups: readonly (readonly string[])[]): string[] {
+  return [...new Set(groups.flat())];
+}
+
+/**
+ * Merged in-memory view of the ok loads, for adapters that read ctx.lock. Undefined when no load is ok.
+ * lastSyncedAt comes from the first ok load; a key present in two loads keeps the later entry.
+ */
+export function mergedLockView(loads: readonly LockLoad[]): YokeStateLock | undefined {
+  const locks = loads.flatMap((load) => (load.status === "ok" ? [load.lock] : []));
+  const first = locks[0];
+  if (first === undefined) return undefined;
+  const harnesses = new Map<string, StateEntry>();
+  for (const lock of locks) {
+    for (const [key, entry] of Object.entries(lock.harnesses)) {
+      harnesses.set(key, entry);
+    }
+  }
+  return {
+    version: first.version,
+    lastSyncedAt: first.lastSyncedAt,
+    harnesses: Object.fromEntries(harnesses),
+  };
+}
+
+/**
+ * D5: starts from the previous ok entries, then for each processed key sets stateEntryFor(desired), or deletes the key
+ * when it has no desired state. Keys outside `processed` are kept as they were. Keys are sorted.
+ */
+export function computeLockUpdate(input: {
+  readonly file: LockFileKind;
+  readonly path: string;
+  readonly previous: LockLoad;
+  readonly processed: readonly StateKey[];
+  readonly desired: ReadonlyMap<StateKey, DesiredScopeState>;
+}): LockUpdate {
+  const map = previousEntries(input.previous);
+  for (const key of input.processed) {
+    const desired = input.desired.get(key);
+    if (desired === undefined) {
+      map.delete(key);
+    } else {
+      map.set(key, stateEntryFor(desired));
+    }
+  }
+  const entries = sortedEntries(map);
+  return {
+    file: input.file,
+    path: input.path,
+    previous: input.previous,
+    entries,
+    changed: lockChanged(input.previous, entries),
+  };
+}
+
+/**
+ * D5: for each fallen instructions target, the entry's instructionsHash is restored from the previous lock entry
+ * (null when there is none). Other target kinds and keys without an entry in the update are left alone.
+ */
+export function carryOverFallbacks(
+  update: LockUpdate,
+  fallen: readonly { readonly key: StateKey; readonly target: ExpectedTarget }[],
+): LockUpdate {
+  const map = new Map<string, StateEntry>(Object.entries(update.entries));
+  for (const { key, target } of fallen) {
+    if (target.kind !== "instructions") continue;
+    const current = map.get(key);
+    if (current === undefined) continue;
+    const prior: StateEntry | undefined =
+      update.previous.status === "ok" ? update.previous.lock.harnesses[key] : undefined;
+    map.set(key, { ...current, instructionsHash: prior?.instructionsHash ?? null });
+  }
+  const entries = sortedEntries(map);
+  return { ...update, entries, changed: lockChanged(update.previous, entries) };
+}
+// #endregion P5 pure helpers
