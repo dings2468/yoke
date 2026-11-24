@@ -246,7 +246,7 @@ export interface SyncOptions {
   readonly scopes: readonly Scope[];
   /**
    * Non-fatal warnings (for example, a transport or scope a harness cannot represent). Must not throw.
-   * FileChangePlan has no warnings field, and warnings must appear identically in dry-run.
+   * Adapters put warnings on FileChangePlan.warnings and do not call this; kept for SPEC §6 compatibility.
    */
   readonly warn: (message: string) => void;
 }
@@ -274,11 +274,16 @@ export function stateKey(harness: HarnessName, scope: Scope): StateKey {
   return `${harness}:${scope}`;
 }
 
+/** Adapter-chosen id of a shared native name list, for example "disabled-servers". */
+export const OwnedListIdSchema = z.string().regex(/^[a-z][a-z0-9-]{0,31}$/);
+
 export const StateEntrySchema = z.strictObject({
   /** server name -> sha256 (hex) of the sorted-key canonical JSON of its canonical McpServerDefinition. */
   mcpHashes: z.record(McpServerNameSchema, Sha256HexSchema),
   /** sha256 of the last-written instruction target, or null when yoke wrote no instructions for this key. */
   instructionsHash: Sha256HexSchema.nullable(),
+  /** Names yoke added to shared native name lists, per list id. Absent means none. Only these names are ever removed by yoke. */
+  ownedNames: z.record(OwnedListIdSchema, z.array(McpServerNameSchema)).optional(),
 });
 export type StateEntry = z.infer<typeof StateEntrySchema>;
 
