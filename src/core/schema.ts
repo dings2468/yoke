@@ -146,7 +146,55 @@ export type YokeConfig = z.infer<typeof YokeConfigSchema>;
 // #endregion S4 config
 
 // #region S5 resolved
-// (S5 content)
+const resolvedServerExtras = {
+  /** Always explicit after merge. A stub over a full definition yields the definition with enabled: false. */
+  enabled: z.boolean(),
+  /** Scopes that contributed to this entry, ascending precedence (user -> local), unique, non-empty. */
+  scopes: z.array(ScopeSchema).min(1),
+};
+
+/** A fully merged server. A stub with nothing beneath it is dropped by the merge and never appears here. */
+export const ResolvedMcpServerSchema = z.discriminatedUnion("transport", [
+  McpStdioServerSchema.extend(resolvedServerExtras),
+  McpHttpServerSchema.extend(resolvedServerExtras),
+  McpSseServerSchema.extend(resolvedServerExtras),
+]);
+export type ResolvedMcpServer = z.infer<typeof ResolvedMcpServerSchema>;
+
+export const ResolvedYokeConfigSchema = z.strictObject({
+  version: z.literal(1),
+  mode: ModeSchema,
+  harnesses: z.array(HarnessNameSchema),
+  /** Effective view: local > project > user. */
+  mcps: z.record(McpServerNameSchema, ResolvedMcpServerSchema),
+  instructions: z.strictObject({ source: z.string().min(1), preferSymlink: z.boolean() }),
+  session: z.strictObject({
+    maxTurns: z.number().int().positive(),
+    includeGitDiffStat: z.boolean(),
+  }),
+  /** Validated per-scope inputs. Adapters need them for hybrid mode (project-only tracked files) and per-scope targets. */
+  layers: z.strictObject({
+    user: YokeConfigSchema.optional(),
+    project: YokeConfigSchema.optional(),
+    local: YokeConfigSchema.optional(),
+  }),
+});
+export type ResolvedYokeConfig = z.infer<typeof ResolvedYokeConfigSchema>;
+
+export type YokeDefaults = Pick<
+  ResolvedYokeConfig,
+  "mode" | "harnesses" | "instructions" | "session"
+>;
+
+/** Fresh object on each call, so no shared mutable defaults. Values: SPEC §3 (mode) and the SPEC §4.1 example. */
+export function createYokeDefaults(): YokeDefaults {
+  return {
+    mode: "compiled",
+    harnesses: [],
+    instructions: { source: "AGENTS.md", preferSymlink: true },
+    session: { maxTurns: 40, includeGitDiffStat: true },
+  };
+}
 // #endregion S5 resolved
 
 // #region S6 native
