@@ -2,6 +2,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+  advisoryPlan,
   type DesiredEntry,
   mergeServerEntries,
   type NativeEntry,
@@ -326,5 +327,80 @@ describe("usesEnvReference", () => {
     ).toBe(true);
     // biome-ignore lint/suspicious/noTemplateCurlyInString: literal ${VAR} text is the value under test
     expect(usesEnvReference({ transport: "http", url: "https://a.test/${X}" })).toBe(false);
+  });
+});
+
+describe("composable plans", () => {
+  let sb: Sandbox;
+  beforeEach(async () => {
+    sb = await setupAdapterSandbox();
+  });
+  afterEach(async () => {
+    await cleanupSandbox(sb);
+  });
+
+  it("marks planJsonKeyPatch plans composable, both noop and patch", async () => {
+    const existing = join(sb.repo, "marks.json");
+    await writeFile(existing, '{"mcpServers":{"a":{"command":"a"}}}\n', "utf8");
+
+    const noop = await planJsonKeyPatch(createNodeFs(), {
+      scope: "user",
+      path: existing,
+      keyPath: ["mcpServers", "a"],
+      value: { command: "a" },
+      summary: "noop",
+      warnings: [],
+      expected: [],
+    });
+    const patch = await planJsonKeyPatch(createNodeFs(), {
+      scope: "user",
+      path: existing,
+      keyPath: ["mcpServers", "b"],
+      value: { command: "b" },
+      summary: "patch",
+      warnings: [],
+      expected: [],
+    });
+    expect(noop.action).toBe("noop");
+    expect(noop.composable).toBe(true);
+    expect(patch.action).toBe("patch-json");
+    expect(patch.composable).toBe(true);
+  });
+
+  it("leaves composable undefined on advisory plans", () => {
+    const plan = advisoryPlan("local", join(sb.repo, "AGENTS.local.md"), "skip", ["w"]);
+    expect(plan.composable).toBeUndefined();
+  });
+
+  it("lets two key-scoped plans share one missing file when applied in order", async () => {
+    const path = join(sb.repo, "shared.json");
+    const first = await planJsonKeyPatch(createNodeFs(), {
+      scope: "user",
+      path,
+      keyPath: ["a"],
+      value: 1,
+      summary: "first",
+      warnings: [],
+      expected: [],
+    });
+    const second = await planJsonKeyPatch(createNodeFs(), {
+      scope: "user",
+      path,
+      keyPath: ["b", "c"],
+      value: 2,
+      summary: "second",
+      warnings: [],
+      expected: [],
+    });
+    // Both plans were made before either applies, so both saw the file as missing.
+    expect(first.before).toBeUndefined();
+    expect(second.before).toBeUndefined();
+
+    const ctx = makeApplyContext(sb);
+    await first.apply(ctx);
+    await second.apply(ctx);
+
+    const parsed: unknown = JSON.parse(await readFile(path, "utf8"));
+    expect(parsed).toEqual({ a: 1, b: { c: 2 } });
   });
 });

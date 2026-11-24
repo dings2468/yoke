@@ -99,6 +99,8 @@ export interface FileChangePlan {
   readonly warnings: readonly string[];
   /** What the lock records for this path after apply. */
   readonly expected: readonly ExpectedTarget[];
+  /** True when apply() re-reads the file and patches only its own key, so several such plans may share a path. */
+  readonly composable?: boolean;
   readonly apply: (ctx: ApplyContext) => Promise<ApplyResult>;
 }
 
@@ -379,6 +381,7 @@ export async function planJsonKeyPatch(
       after: cur?.text,
       warnings,
       expected,
+      composable: true,
       apply: () => Promise.resolve({ status: "unchanged", backupPath: undefined }),
     };
   }
@@ -400,6 +403,7 @@ export async function planJsonKeyPatch(
     after: planned.after,
     warnings,
     expected,
+    composable: true,
     apply: async (ctx: ApplyContext): Promise<ApplyResult> => {
       const result = await commitJsonPatch(ctx.fs, planned, { backup: ctx.backup });
       if (result.written) {
