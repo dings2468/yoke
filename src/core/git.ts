@@ -89,11 +89,17 @@ function assertOk(args: readonly string[], result: ExecResult): void {
   }
 }
 
-/** Repository top-level directory, or `undefined` when `cwd` is not inside a repository (exit 128). */
+const NOT_A_REPOSITORY = "not a git repository";
+
+/**
+ * Repository top-level directory, or `undefined` when `cwd` is not inside a repository.
+ * Only an exit-128 failure whose stderr says "not a git repository" counts as "outside a repository".
+ * Any other failure (for example "dubious ownership" under safe.directory) throws `GitError` with git's stderr.
+ */
 export async function gitRepoRoot(ctx: GitContext): Promise<string | undefined> {
   const args = ["rev-parse", "--show-toplevel"] as const;
   const result = await runGit(ctx, args);
-  if (result.exitCode === 128) return undefined;
+  if (result.exitCode === 128 && result.stderr.includes(NOT_A_REPOSITORY)) return undefined;
   assertOk(args, result);
   return stripTrailingNewlines(result.stdout);
 }
@@ -122,7 +128,7 @@ export async function gitStatusShort(ctx: GitContext): Promise<string> {
 export async function gitDiffStat(ctx: GitContext): Promise<string> {
   const head = await runGit(ctx, ["rev-parse", "--verify", "-q", "HEAD"]);
   const base = head.exitCode === 0 ? "HEAD" : "--cached";
-  const args = ["diff", "--stat", "--no-color", "--no-ext-diff", base] as const;
+  const args = ["diff", "--stat", "--no-color", "--no-ext-diff", base, "--"] as const;
   const result = await runGit(ctx, args);
   assertOk(args, result);
   return stripTrailingNewlines(result.stdout);
