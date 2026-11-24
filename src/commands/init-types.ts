@@ -11,13 +11,7 @@ export class InitError extends Error {
   }
 }
 
-/** A malformed command line. Maps to exit 2. Same shape as the UsageError in exit.ts. */
-export class UsageError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "UsageError";
-  }
-}
+export { UsageError } from "./exit.js";
 
 export type SourceToken =
   | { readonly kind: "harness"; readonly name: string; readonly mcpsOnly: boolean }
