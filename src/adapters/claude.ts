@@ -5,9 +5,10 @@
  * goes through an injected ReadFs, and nothing here touches the disk, the environment, or the clock beyond `env`.
  */
 import { isAbsolute, join } from "node:path";
-import { isNotFound, type ReadFs } from "../core/fs-safe.js";
+import { isNotFound, type ReadFs, readJsonIfExists } from "../core/fs-safe.js";
 import type { Env } from "../core/git.js";
 import {
+  getAtPath,
   isJsonObject,
   type JsonKeyPath,
   type JsonObject,
@@ -17,8 +18,28 @@ import {
   type McpServerDefinition,
   McpServerDefinitionSchema,
   McpServerNameSchema,
+  type PartialYokeConfig,
+  PartialYokeConfigSchema,
+  type ResolvedYokeConfig,
+  SCOPES,
+  type Scope,
+  type SyncOptions,
+  stateKey,
 } from "../core/schema.js";
-import { type NativeEntry, NativeStateError } from "./base.js";
+import {
+  type AdapterContext,
+  type DesiredEntry,
+  definedNames,
+  type FileChangePlan,
+  layerView,
+  mergeServerEntries,
+  type NativeEntry,
+  NativeStateError,
+  planJsonKeyPatch,
+  readFileSnapshot,
+  toDefinition,
+  toNativeInstructions,
+} from "./base.js";
 
 export const CLAUDE_NAME = "claude";
 /** Lock list ids for Claude's two per-project disable lists (decision D7). */
@@ -251,3 +272,205 @@ export function projectEntry(
   }
   return entry;
 }
+
+// #region CL2 mcp
+
+/** Requires a top-level JSON object when the file exists. Undefined when the file is missing. */
+function topLevelObject(value: JsonValue | undefined, path: string): JsonObject | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (!isJsonObject(value)) {
+    throw new NativeStateError("top level must be a JSON object", path);
+  }
+  return value;
+}
+
+/** Reads a path inside an optional object. Undefined when the object or the key is absent. */
+function valueAt(root: JsonObject | undefined, keyPath: JsonKeyPath): JsonValue | undefined {
+  return root === undefined ? undefined : getAtPath(root, keyPath);
+}
+
+/** Managed definitions only: opaque entries and in-entry extras are not part of the canonical state. */
+function managedDefs(entries: ReadonlyMap<string, NativeEntry>): Map<string, McpServerDefinition> {
+  const out = new Map<string, McpServerDefinition>();
+  for (const [name, entry] of entries) {
+    if (entry.kind === "managed") {
+      out.set(name, entry.def);
+    }
+  }
+  return out;
+}
+
+/** Reads one instructions file as a NativeInstructions value (undefined when missing). */
+async function readInstructions(fs: ReadFs, path: string) {
+  return toNativeInstructions(path, await readFileSnapshot(fs, path));
+}
+
+/**
+ * Reads Claude's native state (SPEC §6, Q2). User tier: top-level `mcpServers`. Local tier: `projects[<repo>].mcpServers`
+ * in the user config file. Project tier: `.mcp.json`. Names yoke owns in the per-project disable lists (D7, A6) show as
+ * `enabled: false` in the local tier when a lower-tier definition exists. Never calls `ctx.exec`.
+ */
+export async function readClaudeNativeState(
+  ctx: AdapterContext,
+  repoPath: string,
+): Promise<PartialYokeConfig> {
+  const paths = claudePaths(ctx.homeDir, ctx.env, repoPath);
+  const repoKey = await claudeRepoKey(ctx.fs, repoPath);
+
+  const userFile = await readJsonIfExists(ctx.fs, paths.userConfig);
+  const userRoot = topLevelObject(userFile?.value, paths.userConfig);
+  const projectFile = await readJsonIfExists(ctx.fs, paths.projectMcp);
+  const projectRoot = topLevelObject(projectFile?.value, paths.projectMcp);
+
+  const user = managedDefs(readClaudeServers(valueAt(userRoot, USER_MCP_KEY), paths.userConfig));
+  const project = managedDefs(
+    readClaudeServers(valueAt(projectRoot, USER_MCP_KEY), paths.projectMcp),
+  );
+  const repoEntry = projectEntry(userRoot, repoKey, paths.userConfig);
+  const local = managedDefs(
+    readClaudeServers(valueAt(repoEntry, ["mcpServers"]), paths.userConfig),
+  );
+
+  const ownedLists = ctx.lock?.harnesses[stateKey(CLAUDE_NAME, "local")]?.ownedNames ?? {};
+  const disableLists: readonly { readonly id: string; readonly key: string }[] = [
+    { id: DISABLED_SERVERS_LIST, key: "disabledMcpServers" },
+    { id: DISABLED_MCPJSON_LIST, key: "disabledMcpjsonServers" },
+  ];
+  const owned = new Set<string>();
+  for (const { id, key } of disableLists) {
+    const claimed = ownedLists[id] ?? [];
+    if (claimed.length === 0) {
+      continue;
+    }
+    const native = readNameList(valueAt(repoEntry, [key]), paths.userConfig, key);
+    for (const name of claimed) {
+      if (native.includes(name)) {
+        owned.add(name);
+      }
+    }
+  }
+  for (const name of owned) {
+    const localDef = local.get(name);
+    if (localDef !== undefined) {
+      local.set(name, { ...localDef, enabled: false });
+      continue;
+    }
+    const lower = project.get(name) ?? user.get(name);
+    if (lower !== undefined) {
+      local.set(name, { ...lower, enabled: false });
+    }
+  }
+
+  const userInstructions = await readInstructions(ctx.fs, paths.userInstructions);
+  const projectInstructions = await readInstructions(ctx.fs, paths.projectInstructions);
+  const localInstructions = await readInstructions(ctx.fs, paths.localInstructions);
+
+  return PartialYokeConfigSchema.parse({
+    user: {
+      mcps: Object.fromEntries(user),
+      ...(userInstructions === undefined ? {} : { instructions: userInstructions }),
+    },
+    project: {
+      mcps: Object.fromEntries(project),
+      ...(projectInstructions === undefined ? {} : { instructions: projectInstructions }),
+    },
+    local: {
+      mcps: Object.fromEntries(local),
+      ...(localInstructions === undefined ? {} : { instructions: localInstructions }),
+    },
+  });
+}
+
+/**
+ * Enabled servers that a scope should carry in its native file (Q2). Local uses the fully resolved definition from
+ * `config.mcps`, because Claude does not field-merge. Project drops names that the local layer stubs out, in compiled
+ * mode only (hybrid mode uses the disable lists instead, CL3).
+ */
+function desiredServers(
+  config: ResolvedYokeConfig,
+  scope: Scope,
+  compiled: boolean,
+): Map<string, McpServerDefinition> {
+  const out = new Map<string, McpServerDefinition>();
+  if (scope === "local") {
+    for (const name of definedNames(config, "local")) {
+      const server = config.mcps[name];
+      if (server?.enabled === true) {
+        out.set(name, toDefinition(server));
+      }
+    }
+    return out;
+  }
+  for (const [name, server] of Object.entries(layerView(config, scope))) {
+    if (!server.enabled) {
+      continue;
+    }
+    if (scope === "project" && compiled && config.mcps[name]?.enabled === false) {
+      continue;
+    }
+    out.set(name, toDefinition(server));
+  }
+  return out;
+}
+
+/**
+ * Plans the MCP server key in each Claude file for the requested scopes. Every change is a key-scoped patch that
+ * keeps the rest of the file. Native entries are merged with mergeServerEntries (Q1), so unknown keys survive.
+ */
+export async function planClaudeMcp(
+  ctx: AdapterContext,
+  config: ResolvedYokeConfig,
+  opts: SyncOptions,
+): Promise<FileChangePlan[]> {
+  const paths = claudePaths(ctx.homeDir, ctx.env, opts.repoPath);
+  const repoKey = await claudeRepoKey(ctx.fs, opts.repoPath);
+  const compiled = config.mode === "compiled";
+  const plans: FileChangePlan[] = [];
+
+  for (const scope of SCOPES) {
+    if (!opts.scopes.includes(scope)) {
+      continue;
+    }
+    const isLocal = scope === "local";
+    const path = scope === "project" ? paths.projectMcp : paths.userConfig;
+    const keyPath = isLocal ? localMcpKey(repoKey) : USER_MCP_KEY;
+
+    const file = await readJsonIfExists(ctx.fs, path);
+    const root = topLevelObject(file?.value, path);
+    const raw = isLocal
+      ? valueAt(projectEntry(root, repoKey, path), ["mcpServers"])
+      : valueAt(root, USER_MCP_KEY);
+    const native = readClaudeServers(raw, path);
+
+    const defs = desiredServers(config, scope, compiled);
+    const desired = new Map<string, DesiredEntry>();
+    for (const [name, def] of defs) {
+      desired.set(name, { def, entry: toClaudeEntry(def) });
+    }
+
+    const merged = mergeServerEntries({
+      harness: CLAUDE_NAME,
+      path,
+      native,
+      desired,
+      force: ctx.force ?? false,
+    });
+    plans.push(
+      await planJsonKeyPatch(ctx.fs, {
+        scope,
+        path,
+        keyPath,
+        value: merged.value,
+        summary: `${path}: ${keyPath.join(".")} (${defs.size} server${defs.size === 1 ? "" : "s"})`,
+        warnings: merged.warnings,
+        expected: [{ kind: "mcps", scope, mcps: Object.fromEntries(defs) }],
+      }),
+    );
+  }
+
+  return plans;
+}
+
+// #endregion CL2 mcp
