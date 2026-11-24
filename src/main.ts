@@ -10,6 +10,8 @@ import { doctorExitCode, formatDoctorReport, shouldUseColor } from "./commands/d
 import { EXIT_OK, EXIT_PROBLEMS, EXIT_USAGE, UsageError } from "./commands/exit.js";
 import { createClackPrompts, runInit } from "./commands/init.js";
 import type { SecretPolicy } from "./commands/init-convert.js";
+import { runSync } from "./commands/sync.js";
+import { createClackDriftPrompt } from "./commands/sync-prompt.js";
 import type { Fs, ReadFs } from "./core/fs-safe.js";
 import type { Env, Exec } from "./core/git.js";
 import { buildSyncPlan } from "./core/plan.js";
@@ -127,6 +129,42 @@ export function buildProgram(deps: CliDeps, setExit: (code: number) => void): Co
       },
     );
   // #endregion I-CLI init
+
+  // #region S-CLI sync
+  program
+    .command("sync")
+    .description(
+      "Write harness config from yoke.yaml to native files. Drift is refused unless --force.",
+    )
+    .option("--dry-run", "print the plan and write nothing")
+    .option("--global", "sync only the user-level config (no repository needed)")
+    .addOption(new Option("--all", "sync every scope, user included").conflicts("global"))
+    .option("--force", "proceed past native drift (originals are backed up)")
+    .action(
+      async (opts: { dryRun?: boolean; global?: boolean; all?: boolean; force?: boolean }) => {
+        const code = await runSync(
+          {
+            dryRun: opts.dryRun === true,
+            global: opts.global === true,
+            all: opts.all === true,
+            force: opts.force === true,
+          },
+          {
+            io: deps.io,
+            cwd: deps.cwd,
+            homeDir: deps.homeDir,
+            env: deps.env,
+            fs: deps.fs,
+            exec: deps.exec,
+            now: deps.now,
+            factories: deps.factories,
+            prompts: createClackDriftPrompt(),
+          },
+        );
+        setExit(code);
+      },
+    );
+  // #endregion S-CLI sync
 
   return program;
 }
