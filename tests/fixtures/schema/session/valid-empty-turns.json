@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "id": "empty-session",
+  "createdAt": "2026-11-24T10:00:00Z",
+  "sourceHarness": "agy",
+  "repoPath": "/workspaces/example",
+  "git": {
+    "branch": "",
+    "statusShort": "",
+    "diffStat": ""
+  },
+  "turns": []
+}

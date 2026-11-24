@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "id": "bad-thinking",
+  "createdAt": "2026-11-24T10:00:00Z",
+  "sourceHarness": "claude",
+  "repoPath": "/workspaces/example",
+  "git": {
+    "branch": "main",
+    "statusShort": "",
+    "diffStat": ""
+  },
+  "turns": [
+    {
+      "role": "assistant",
+      "content": "Done.",
+      "thinking": "Let me consider the refresh flow first..."
+    }
+  ]
+}
