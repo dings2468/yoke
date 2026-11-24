@@ -364,4 +364,89 @@ describe("readClaudeNativeState", () => {
     const state = await readClaudeNativeState(makeAdapterContext(sb, { lock }), sb.repo);
     expect(state.local?.mcps.gone).toBeUndefined();
   });
+
+  it("throws for a malformed disabled list without force, and warns and ignores it with force", async () => {
+    const home = { projects: { [sb.repo]: { disabledMcpServers: "other" } } };
+    await writeFile(userConfigPath(), JSON.stringify(home), "utf8");
+    const lock = lockFrom({
+      "claude:local": {
+        mcpHashes: {},
+        instructionsHash: null,
+        ownedNames: { [DISABLED_SERVERS_LIST]: ["other"] },
+      },
+    });
+
+    await expect(
+      readClaudeNativeState(makeAdapterContext(sb, { lock }), sb.repo),
+    ).rejects.toBeInstanceOf(NativeStateError);
+
+    const warnings: string[] = [];
+    const state = await readClaudeNativeState(
+      makeAdapterContext(sb, { lock, force: true }),
+      sb.repo,
+      (message) => warnings.push(message),
+    );
+    expect(state.local?.mcps).toEqual({});
+    expect(warnings).toEqual([
+      `claude: disabledMcpServers in ${userConfigPath()} must be an array of strings; ignored because --force was given, and the file is left unchanged`,
+    ]);
+    expect(parseJsonText(await readFile(userConfigPath(), "utf8"))).toEqual(home);
+  });
+});
+
+describe("planClaudeMcp: entries that do not fit their transport (opaque)", () => {
+  const mismatched = {
+    type: "stdio",
+    command: "x",
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal ${KEY} reference, must stay unexpanded
+    headers: { "X-Key": "Bearer ${KEY}" },
+  };
+
+  it("keeps a stdio entry with headers byte-for-byte, as opaque with a warning", async () => {
+    await writeFile(
+      userConfigPath(),
+      `${JSON.stringify({ mcpServers: { mixed: mismatched } }, null, 2)}\n`,
+      "utf8",
+    );
+    const config = await inlineConfig({ user: "version: 1\nmcps: {}\n" });
+    const [plan] = await planClaudeMcp(makeAdapterContext(sb), config, syncOpts(["user"]));
+    expect(plan?.warnings).toEqual([
+      `claude: MCP server "mixed" in ${userConfigPath()} has an unsupported transport ("headers" does not fit transport "stdio"); left unchanged and not managed by yoke`,
+    ]);
+
+    await plan?.apply(makeApplyContext(sb));
+    const parsed = parseJsonText(await readFile(userConfigPath(), "utf8")) as {
+      mcpServers: Record<string, unknown>;
+    };
+    expect(parsed.mcpServers.mixed).toEqual(mismatched);
+    expect(JSON.stringify(parsed.mcpServers.mixed)).toBe(JSON.stringify(mismatched));
+  });
+
+  it("fails when yoke defines the same name, unless --force is set", async () => {
+    await writeFile(
+      userConfigPath(),
+      `${JSON.stringify({ mcpServers: { mixed: mismatched } }, null, 2)}\n`,
+      "utf8",
+    );
+    const config = await inlineConfig({
+      user: "version: 1\nmcps:\n  mixed:\n    transport: stdio\n    command: w\n",
+    });
+    await expect(
+      planClaudeMcp(makeAdapterContext(sb), config, syncOpts(["user"])),
+    ).rejects.toBeInstanceOf(NativeStateError);
+
+    const [plan] = await planClaudeMcp(
+      makeAdapterContext(sb, { force: true }),
+      config,
+      syncOpts(["user"]),
+    );
+    expect(plan?.warnings).toEqual([
+      `claude: MCP server "mixed" in ${userConfigPath()} has an unsupported transport ("headers" does not fit transport "stdio"); replaced because --force was given`,
+    ]);
+    await plan?.apply(makeApplyContext(sb));
+    const parsed = parseJsonText(await readFile(userConfigPath(), "utf8")) as {
+      mcpServers: Record<string, unknown>;
+    };
+    expect(parsed.mcpServers.mixed).toEqual({ type: "stdio", command: "w" });
+  });
 });
