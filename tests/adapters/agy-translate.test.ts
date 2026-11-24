@@ -92,15 +92,58 @@ describe("agy translation", () => {
     });
   });
 
-  it.each([
-    "both-urls.json",
-    "disabled-string.json",
-    "env-number.json",
-    "http-url.json",
-    "type-mismatch.json",
-  ])("throws NativeStateError for the corrupt fixture invalid/%s", async (name) => {
-    const { root, path } = await loadFixture(`agy/invalid/${name}`, `invalid/${name}`);
-    expect(() => readAgyServers(getAtPath(root, AGY_MCP_KEY), path)).toThrow(NativeStateError);
+  it.each(["both-urls.json", "disabled-string.json", "env-number.json", "http-url.json"])(
+    "throws NativeStateError for the corrupt fixture invalid/%s",
+    async (name) => {
+      const { root, path } = await loadFixture(`agy/invalid/${name}`, `invalid/${name}`);
+      expect(() => readAgyServers(getAtPath(root, AGY_MCP_KEY), path)).toThrow(NativeStateError);
+    },
+  );
+
+  it("reads an entry with both command and url as opaque, keeps it unchanged, and does not throw", async () => {
+    const { root, path } = await loadFixture(
+      "agy/mismatch/command-and-url.json",
+      "mismatch/command-and-url.json",
+    );
+    const servers = readAgyServers(getAtPath(root, AGY_MCP_KEY), path);
+    expect(servers.get("both")).toStrictEqual({
+      kind: "opaque",
+      raw: { command: "c", url: "https://x.test/mcp" },
+      reason: '"command" conflicts with "url"',
+    });
+  });
+
+  it("reads transport-mismatched entries as opaque with the raw entry kept", () => {
+    const remoteEnv: JsonValue = { url: "https://y.test/mcp", env: { K: "v" } };
+    expect(fromAgyEntry("remote-env", remoteEnv, "p")).toStrictEqual({
+      kind: "opaque",
+      raw: remoteEnv,
+      reason: '"url" conflicts with "env"',
+    });
+    const stdioHeaders: JsonValue = { command: "s", headers: { A: "b" } };
+    expect(fromAgyEntry("stdio-headers", stdioHeaders, "p")).toStrictEqual({
+      kind: "opaque",
+      raw: stdioHeaders,
+      reason: '"command" conflicts with "headers"',
+    });
+    const typed: JsonValue = { type: "http", command: "t" };
+    expect(fromAgyEntry("typed", typed, "p")).toStrictEqual({
+      kind: "opaque",
+      raw: typed,
+      reason: 'type "http" conflicts with a stdio entry',
+    });
+  });
+
+  it("throws for corrupt values even when the entry's transport does not use them", () => {
+    expect(() => fromAgyEntry("x", { url: "https://x.test/mcp", env: { K: 1 } }, "p")).toThrow(
+      NativeStateError,
+    );
+    expect(() => fromAgyEntry("x", { command: "c", headers: { A: ["b"] } }, "p")).toThrow(
+      NativeStateError,
+    );
+    expect(() => fromAgyEntry("x", { url: "https://x.test/mcp", headers: "h" }, "p")).toThrow(
+      NativeStateError,
+    );
   });
 
   it("returns an empty map when mcpServers is absent and throws when it is not an object", () => {
