@@ -419,7 +419,7 @@ export async function safeSymlink(
   try {
     await fs.symlink(rel, tmp);
   } catch (err: unknown) {
-    await fs.unlink(tmp).catch(() => {});
+    // A failed symlink call created nothing at `tmp`; on EEXIST the path belongs to someone else. Never unlink it here.
     const code = errorCode(err);
     if (code !== undefined && UNSUPPORTED_SYMLINK_CODES.has(code)) {
       return { kind: "fallback", reason: "unsupported", detail: `symlink refused: ${code}` };
