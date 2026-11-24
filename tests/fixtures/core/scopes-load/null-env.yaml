@@ -1,0 +1,7 @@
+version: 1
+mcps:
+  search:
+    transport: stdio
+    command: npx
+    env:
+      KEY: null

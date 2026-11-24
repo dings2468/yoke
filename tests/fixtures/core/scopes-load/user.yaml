@@ -1,0 +1,8 @@
+version: 1
+mcps:
+  search:
+    transport: stdio
+    command: npx
+    args: ["-y", "search-server"]
+    env:
+      TOKEN: "${SEARCH_TOKEN}"

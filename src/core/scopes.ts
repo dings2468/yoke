@@ -2,7 +2,8 @@
  * src/core/scopes.ts — 3-tier scope merge (SPEC §3.1, §4.1). Pure: no I/O, no environment reads, no clock.
  * Inputs are already-parsed, already-validated scope files; loading them is a separate step.
  */
-import { isAbsolute, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
+import { parse as parseYaml } from "yaml";
 import {
   createYokeDefaults,
   isMcpDisabledStub,
@@ -17,6 +18,7 @@ import {
   SCOPES,
   type Scope,
   type YokeConfig,
+  YokeConfigSchema,
 } from "./schema.js";
 
 export interface ScopeInput {
@@ -219,3 +221,107 @@ export function resolveConfig(inputs: ScopeInputs, opts: ResolveOptions): Resolv
     layers,
   });
 }
+
+// #region R2 loader
+/** Reads a file as UTF-8 text. `undefined` means the file does not exist. */
+export type ReadText = (path: string) => Promise<string | undefined>;
+
+export type Env = Readonly<Record<string, string | undefined>>;
+
+/** Absolute paths of the yaml files for each scope. `user` is omitted when no user config dir applies. */
+export interface ScopePaths {
+  readonly user?: string;
+  readonly project: string;
+  readonly local: string;
+}
+
+/** `XDG_CONFIG_HOME/yoke` when that variable is absolute, otherwise `<homeDir>/.config/yoke`. */
+export function userConfigDir(env: Env, homeDir: string): string {
+  const xdg = env.XDG_CONFIG_HOME;
+  const base = xdg !== undefined && isAbsolute(xdg) ? xdg : join(homeDir, ".config");
+  return join(base, "yoke");
+}
+
+export function defaultScopePaths(opts: {
+  readonly repoRoot: string;
+  readonly userConfigDir?: string;
+}): ScopePaths {
+  if (!isAbsolute(opts.repoRoot)) {
+    throw new Error(`repoRoot must be an absolute path: ${opts.repoRoot}`);
+  }
+  const repo = {
+    project: join(opts.repoRoot, "yoke.yaml"),
+    local: join(opts.repoRoot, "yoke.local.yaml"),
+  };
+  if (opts.userConfigDir === undefined) {
+    return repo;
+  }
+  return { user: join(opts.userConfigDir, "yoke.yaml"), ...repo };
+}
+
+export class ScopeConfigError extends Error {
+  constructor(
+    message: string,
+    readonly scope: Scope,
+    readonly path: string,
+    options?: { cause?: unknown },
+  ) {
+    super(message, options);
+    this.name = "ScopeConfigError";
+  }
+}
+
+/** Parses and validates one scope file. No defaults are applied. */
+export function parseScopeConfig(text: string, scope: Scope, path: string): YokeConfig {
+  let doc: unknown;
+  try {
+    doc = parseYaml(text);
+  } catch (error: unknown) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new ScopeConfigError(`${path}: ${detail}`, scope, path, { cause: error });
+  }
+  if (doc === null) {
+    throw new ScopeConfigError(
+      `${path}: file is empty; expected at least "version: 1"`,
+      scope,
+      path,
+    );
+  }
+  const result = YokeConfigSchema.safeParse(doc);
+  if (!result.success) {
+    const lines = result.error.issues.map(
+      (issue) => `${path}: ${issue.path.join(".")}: ${issue.message}`,
+    );
+    throw new ScopeConfigError(lines.join("\n"), scope, path, { cause: result.error });
+  }
+  return result.data;
+}
+
+/** Reads all present scope files in parallel. A missing file is omitted from the result. */
+export async function loadScopeInputs(read: ReadText, paths: ScopePaths): Promise<ScopeInputs> {
+  const entries: [Scope, string][] = [];
+  if (paths.user !== undefined) {
+    entries.push(["user", paths.user]);
+  }
+  entries.push(["project", paths.project], ["local", paths.local]);
+
+  for (const [, path] of entries) {
+    if (!isAbsolute(path)) {
+      throw new Error(`scope path must be absolute: ${path}`);
+    }
+  }
+
+  const texts = await Promise.all(entries.map(([, path]) => read(path)));
+  const inputs: ScopeInputs = {};
+  for (let i = 0; i < entries.length; i++) {
+    const entry = entries[i];
+    const text = texts[i];
+    if (entry === undefined || text === undefined) {
+      continue;
+    }
+    const [scope, path] = entry;
+    inputs[scope] = { config: parseScopeConfig(text, scope, path), baseDir: dirname(path) };
+  }
+  return inputs;
+}
+// #endregion R2 loader
