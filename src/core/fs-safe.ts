@@ -462,7 +462,7 @@ export async function planJsonPatch(
     keyPath,
     value,
     before,
-    after: result.content,
+    after: result.content ?? "",
     changed: result.changed,
     strategy: result.strategy,
   };
@@ -497,7 +497,7 @@ export async function commitJsonPatch(
     } catch (err: unknown) {
       throw asFsSafeJsonError(plan.path, err);
     }
-    if (!result.changed) {
+    if (!result.changed || result.content === undefined) {
       return { written: false, rebased: true, backupPath: undefined };
     }
     after = result.content;
