@@ -132,7 +132,29 @@ export function isMcpDisabledStub(entry: McpServerEntry): entry is McpDisabledSt
 // #endregion S7 options
 
 // #region S2 state
-// (S2 content)
+/** State key "<harness>:<scope>", for example "example-harness:project" (agreed in review; replaces bare harness keys). */
+export const StateKeySchema = z.templateLiteral([HarnessNameSchema, ":", ScopeSchema]);
+export type StateKey = z.infer<typeof StateKeySchema>; // `${string}:user` | `${string}:project` | `${string}:local`
+
+export function stateKey(harness: HarnessName, scope: Scope): StateKey {
+  return `${harness}:${scope}`;
+}
+
+export const StateEntrySchema = z.strictObject({
+  /** server name -> sha256 (hex) of the sorted-key canonical JSON of its canonical McpServerDefinition. */
+  mcpHashes: z.record(McpServerNameSchema, Sha256HexSchema),
+  /** sha256 of the last-written instruction target, or null when yoke wrote no instructions for this key. */
+  instructionsHash: Sha256HexSchema.nullable(),
+});
+export type StateEntry = z.infer<typeof StateEntrySchema>;
+
+export const YokeStateLockSchema = z.strictObject({
+  version: z.literal(1),
+  lastSyncedAt: IsoDateTimeSchema,
+  /** Field name kept from SPEC §4.3; keys are StateKey, not bare harness names. */
+  harnesses: z.record(StateKeySchema, StateEntrySchema),
+});
+export type YokeStateLock = z.infer<typeof YokeStateLockSchema>;
 // #endregion S2 state
 
 // #region S3 session
