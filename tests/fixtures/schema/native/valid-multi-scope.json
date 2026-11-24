@@ -1,0 +1,43 @@
+{
+  "user": {
+    "mcps": {
+      "filesystem": {
+        "transport": "stdio",
+        "command": "npx",
+        "args": ["-y", "@modelcontextprotocol/server-filesystem", "/home/example/notes"],
+        "env": {
+          "LOG_LEVEL": "info"
+        }
+      },
+      "docs": {
+        "transport": "sse",
+        "url": "https://docs.example.com/sse"
+      }
+    },
+    "instructions": {
+      "kind": "file",
+      "path": "/home/example/.harness/INSTRUCTIONS.md",
+      "content": "# Personal instructions\n\nPrefer small commits.\n"
+    }
+  },
+  "project": {
+    "mcps": {
+      "linear": {
+        "transport": "http",
+        "url": "https://mcp.linear.app/mcp",
+        "headers": {
+          "Authorization": "Bearer ${LINEAR_API_KEY}"
+        },
+        "enabled": true
+      }
+    },
+    "instructions": {
+      "kind": "symlink",
+      "path": "CLAUDE.md",
+      "target": "AGENTS.md"
+    }
+  },
+  "local": {
+    "mcps": {}
+  }
+}
