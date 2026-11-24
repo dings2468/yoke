@@ -33,7 +33,7 @@ describe("formatBackupTimestamp and backupRelativePath", () => {
   });
 
   it("mirrors POSIX and Windows absolute paths", () => {
-    expect(backupRelativePath("/home/u/.claude.json")).toBe("home/u/.claude.json");
+    expect(backupRelativePath("/home/u/app.json")).toBe("home/u/app.json");
     expect(backupRelativePath("C:\\a\\b")).toBe("C/a/b");
   });
 
