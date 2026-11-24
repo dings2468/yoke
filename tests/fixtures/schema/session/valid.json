@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "id": "session-2026-11-24_01",
+  "createdAt": "2026-11-24T10:00:00.123Z",
+  "sourceHarness": "claude",
+  "repoPath": "/workspaces/example",
+  "git": {
+    "branch": "feat/auth",
+    "statusShort": " M src/auth.ts",
+    "diffStat": " src/auth.ts | 17 +++++++++-------"
+  },
+  "turns": [
+    {
+      "role": "user",
+      "timestamp": "2026-11-24T10:00:00Z",
+      "content": "Add token refresh to the auth module."
+    },
+    {
+      "role": "assistant",
+      "timestamp": "2026-11-24T10:00:42+01:00",
+      "content": "Added refresh logic and a test.",
+      "actions": [
+        { "kind": "edit", "summary": "Edited src/auth.ts (+14/-3)" },
+        { "kind": "command", "summary": "Ran npm test (exit 0)" }
+      ]
+    },
+    {
+      "role": "user",
+      "content": "Thanks, now update the README."
+    }
+  ]
+}

@@ -1,0 +1,9 @@
+{
+  "project": {
+    "mcps": {
+      "github": {
+        "enabled": false
+      }
+    }
+  }
+}

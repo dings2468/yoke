@@ -1,0 +1,44 @@
+{
+  "version": 1,
+  "mode": "hybrid",
+  "harnesses": ["example-harness", "other-harness"],
+  "mcps": {
+    "filesystem": {
+      "transport": "stdio",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "."],
+      "env": { "LOG_LEVEL": "info" },
+      "enabled": true,
+      "scopes": ["user", "local"]
+    },
+    "docs": {
+      "transport": "http",
+      "url": "https://mcp.example.com/mcp",
+      "headers": { "Authorization": "Bearer ${DOCS_TOKEN}" },
+      "enabled": false,
+      "scopes": ["project"]
+    }
+  },
+  "instructions": {
+    "source": "AGENTS.md",
+    "preferSymlink": true
+  },
+  "session": {
+    "maxTurns": 40,
+    "includeGitDiffStat": true
+  },
+  "layers": {
+    "project": {
+      "version": 1,
+      "mode": "hybrid",
+      "harnesses": ["example-harness"],
+      "mcps": {
+        "docs": {
+          "transport": "http",
+          "url": "https://mcp.example.com/mcp",
+          "enabled": false
+        }
+      }
+    }
+  }
+}

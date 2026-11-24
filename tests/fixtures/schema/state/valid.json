@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "lastSyncedAt": "2026-11-24T10:00:00.000Z",
+  "harnesses": {
+    "claude:user": {
+      "mcpHashes": {
+        "github": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+      },
+      "instructionsHash": "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"
+    },
+    "claude:project": {
+      "mcpHashes": {
+        "docs-server": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "local.tools_v2": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "instructionsHash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    },
+    "agy:user": {
+      "mcpHashes": {},
+      "instructionsHash": null
+    }
+  }
+}

@@ -1,0 +1,6 @@
+{
+  "x": {
+    "enabled": false,
+    "command": "npx"
+  }
+}
