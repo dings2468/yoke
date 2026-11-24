@@ -13,6 +13,7 @@ import { createNodeFs } from "../../src/core/fs-safe.js";
 import type { Exec } from "../../src/core/git.js";
 import type { PartialYokeConfig } from "../../src/core/schema.js";
 import type { CliIo } from "../../src/main.js";
+import { guardedFs, snapshotTree } from "../core/plan-helpers.js";
 
 let root: string;
 let repo: string;
@@ -130,6 +131,7 @@ const DEFAULT_OPTS = {
   secrets: "local" as const,
   gitignore: true,
   force: false,
+  dryRun: false,
 };
 
 async function listRepo(): Promise<string[]> {
@@ -440,5 +442,89 @@ describe("runInit, user-scope yoke.yaml", () => {
     expect(code).toBe(EXIT_PROBLEMS);
     expect(await readFile(userPath(), "utf8")).toBe("version: 2\n");
     expect(await listRepo()).toEqual(["ALPHA.md"]);
+  });
+});
+
+describe("runInit, --dry-run", () => {
+  const userPath = (): string => join(home, ".config", "yoke", "yoke.yaml");
+
+  /** Lines of the printed diff that start with an added or removed marker. */
+  function diffLines(): { added: string[]; removed: string[] } {
+    const lines = stdout.join("").split("\n");
+    return {
+      added: lines.filter((line) => /^ {4}\+/.test(line)),
+      removed: lines.filter((line) => /^ {4}-/.test(line)),
+    };
+  }
+
+  it("prints every planned write with its diff and leaves the repo and home byte-for-byte unchanged", async () => {
+    await seedNativeFile();
+    const guard = guardedFs();
+    const before = [await snapshotTree(repo), await snapshotTree(home)];
+    const code = await runInit({ ...DEFAULT_OPTS, dryRun: true }, { ...makeDeps(), fs: guard.fs });
+
+    expect(code).toBe(EXIT_OK);
+    expect(guard.writes).toEqual([]);
+    expect([await snapshotTree(repo), await snapshotTree(home)]).toEqual(before);
+    expect(await readdir(home)).toEqual([]);
+
+    const out = stdout.join("");
+    expect(out).toContain("yoke init --dry-run:");
+    expect(out).toContain("+ create yoke.yaml");
+    expect(out).toContain("~/.config/yoke/yoke.yaml");
+    expect(diffLines().added.some((line) => line.includes("personal:"))).toBe(true);
+    expect(out).not.toContain("written:");
+    expect(out).not.toContain("next: yoke sync");
+  });
+
+  it("shows only added lines for an existing user file, and writes no backup", async () => {
+    await seedNativeFile();
+    const original =
+      "version: 1\n# my servers\nmcps:\n  other:\n    transport: stdio\n    command: uvx\n";
+    await mkdir(join(home, ".config", "yoke"), { recursive: true });
+    await writeFile(userPath(), original, "utf8");
+    const before = [await snapshotTree(repo), await snapshotTree(home)];
+    const code = await runInit(
+      { ...DEFAULT_OPTS, dryRun: true },
+      { ...makeDeps(), fs: guardedFs().fs },
+    );
+
+    expect(code).toBe(EXIT_OK);
+    expect([await snapshotTree(repo), await snapshotTree(home)]).toEqual(before);
+    expect(await readFile(userPath(), "utf8")).toBe(original);
+    const { added, removed } = diffLines();
+    expect(removed).toEqual([]);
+    expect(added.some((line) => line.includes("personal:"))).toBe(true);
+    expect(added.some((line) => line.includes("other:"))).toBe(false);
+  });
+
+  it("with --force, reports the overwrite and creates no backup directory", async () => {
+    await seedNativeFile();
+    await writeFile(join(repo, "yoke.yaml"), "version: 1\nharnesses: []\n", "utf8");
+    const before = [await snapshotTree(repo), await snapshotTree(home)];
+    const code = await runInit(
+      { ...DEFAULT_OPTS, force: true, dryRun: true },
+      { ...makeDeps(), fs: guardedFs().fs },
+    );
+
+    expect(code).toBe(EXIT_OK);
+    expect(stdout.join("")).toContain("~ update yoke.yaml");
+    expect([await snapshotTree(repo), await snapshotTree(home)]).toEqual(before);
+    expect(await listRepo()).not.toContain("backups");
+  });
+
+  it("fails with exit 1 for an existing yoke.yaml without --force, as a real run does, and writes nothing", async () => {
+    await seedNativeFile();
+    await writeFile(join(repo, "yoke.yaml"), "version: 1\nharnesses: []\n", "utf8");
+    const before = [await snapshotTree(repo), await snapshotTree(home)];
+    const code = await runInit(
+      { ...DEFAULT_OPTS, dryRun: true },
+      { ...makeDeps(), fs: guardedFs().fs },
+    );
+
+    expect(code).toBe(EXIT_PROBLEMS);
+    expect(stderr.join("")).toContain("pass --force");
+    expect(stdout.join("")).not.toContain("yoke init --dry-run:");
+    expect([await snapshotTree(repo), await snapshotTree(home)]).toEqual(before);
   });
 });

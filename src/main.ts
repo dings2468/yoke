@@ -99,12 +99,14 @@ export function buildProgram(deps: CliDeps, setExit: (code: number) => void): Co
     )
     .option("--no-gitignore", "do not write .gitignore lines")
     .option("--force", "overwrite existing yoke files (originals are backed up)")
+    .option("--dry-run", "show the planned writes without writing")
     .action(
       async (opts: {
         importFrom?: string[];
         secrets: SecretPolicy;
         gitignore: boolean;
         force: boolean;
+        dryRun: boolean;
       }) => {
         const code = await runInit(
           {
@@ -112,6 +114,7 @@ export function buildProgram(deps: CliDeps, setExit: (code: number) => void): Co
             secrets: opts.secrets,
             gitignore: opts.gitignore,
             force: opts.force,
+            dryRun: opts.dryRun,
           },
           {
             io: deps.io,

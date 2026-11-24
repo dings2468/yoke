@@ -18,6 +18,7 @@ import { createTimedExec, DEFAULT_PROBE_TIMEOUT_MS, probe } from "../core/probe.
 import type { Mode, YokeConfig } from "../core/schema.js";
 import { resolveConfig, userConfigDir } from "../core/scopes.js";
 import type { CliDeps } from "../main.js";
+import { shouldUseColor } from "./doctor-format.js";
 import { EXIT_INTERRUPTED, EXIT_OK, EXIT_PROBLEMS, EXIT_USAGE, UsageError } from "./exit.js";
 import {
   buildInitDraft,
@@ -38,14 +39,17 @@ import {
   InitError,
   type InstructionCandidate,
   type ProjectWriteIntent,
+  type UserTextIntent,
 } from "./init-types.js";
 import { mergeUserConfig } from "./init-user.js";
+import { type RenderOptions, renderPlan } from "./sync-render.js";
 
 export interface InitOptions {
   readonly importFrom: readonly string[] | undefined;
   readonly secrets: SecretPolicy;
   readonly gitignore: boolean;
   readonly force: boolean;
+  readonly dryRun: boolean;
 }
 
 export interface InitPrompts extends PromptApi {
@@ -70,16 +74,6 @@ class CancelledError extends Error {
 
 type TextIntent = Extract<ProjectWriteIntent, { kind: "text" }>;
 type LinesIntent = Extract<ProjectWriteIntent, { kind: "ensure-lines" }>;
-
-/** The user-scope yoke.yaml (U5): merged text, backed up before overwrite, created with mode 0600. */
-interface UserTextIntent {
-  readonly kind: "text";
-  readonly scope: "user";
-  readonly path: string;
-  readonly content: string;
-  readonly ifExists: "overwrite-with-backup";
-  readonly mode: number;
-}
 
 type WriteIntent = ProjectWriteIntent | UserTextIntent;
 
@@ -457,6 +451,19 @@ async function initFlow(opts: InitOptions, deps: InitDeps): Promise<number> {
   }
 
   const plans = await planWrites(fs, repoPath, intents);
+  if (opts.dryRun) {
+    // Same renderer as `yoke sync`. Nothing is passed to executePlan, so no file, backup, or lock is created.
+    const render: RenderOptions = {
+      color: shouldUseColor({ isTTY: deps.io.stdoutIsTTY, env: deps.env }),
+      repoPath,
+      homeDir: deps.homeDir,
+      dryRun: true,
+      command: "yoke init",
+    };
+    const changes = plans.map((plan) => ({ harness: INIT_LABEL, plan }));
+    deps.io.stdout(`${renderPlan(changes, notes, render)}\n`);
+    return EXIT_OK;
+  }
   const syncPlan: SyncPlan = {
     plans,
     changes: plans.map((plan) => ({ harness: INIT_LABEL, plan })),
