@@ -17,7 +17,7 @@ export interface ExecResult {
 export type Exec = (
   file: string,
   args: readonly string[],
-  opts: { readonly cwd: string },
+  opts: { readonly cwd: string; readonly signal?: AbortSignal },
 ) => Promise<ExecResult>;
 
 export type Env = Readonly<Record<string, string | undefined>>;
@@ -33,6 +33,7 @@ export function createNodeExec(baseEnv: Env): Exec {
         [...args],
         {
           cwd: opts.cwd,
+          signal: opts.signal,
           maxBuffer: MAX_BUFFER_BYTES,
           encoding: "utf8",
           env: { ...baseEnv, GIT_OPTIONAL_LOCKS: "0", GIT_TERMINAL_PROMPT: "0", LC_ALL: "C" },
