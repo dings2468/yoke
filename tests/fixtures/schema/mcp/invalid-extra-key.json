@@ -1,0 +1,7 @@
+{
+  "x": {
+    "type": "http",
+    "transport": "http",
+    "url": "https://a.example.com/mcp"
+  }
+}
