@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "mode": "compiled",
+  "harnesses": [],
+  "mcps": {
+    "filesystem": {
+      "transport": "stdio",
+      "command": "npx",
+      "scopes": ["user"]
+    }
+  },
+  "instructions": { "source": "AGENTS.md", "preferSymlink": true },
+  "session": { "maxTurns": 40, "includeGitDiffStat": true },
+  "layers": {}
+}
