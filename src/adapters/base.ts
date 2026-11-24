@@ -8,13 +8,22 @@ import { resolve } from "node:path";
 import type { ExpectedTarget } from "../core/drift.js";
 import {
   type BackupSession,
+  commitJsonPatch,
   type FileStat,
   type Fs,
   isNotFound,
+  planJsonPatch,
   type ReadFs,
+  readJsonIfExists,
 } from "../core/fs-safe.js";
 import type { Env, Exec } from "../core/git.js";
-import type { JsonObject, JsonValue } from "../core/json-text.js";
+import {
+  getAtPath,
+  isJsonObject,
+  type JsonKeyPath,
+  type JsonObject,
+  type JsonValue,
+} from "../core/json-text.js";
 import {
   isMcpDisabledStub,
   type LaunchOptions,
@@ -315,3 +324,198 @@ export function toNativeInstructions(
       return assertNever(snap);
   }
 }
+
+// #region BA2 json plans
+
+export interface JsonKeyPlanInput {
+  readonly scope: Scope;
+  readonly path: string;
+  readonly keyPath: JsonKeyPath;
+  readonly value: JsonValue;
+  readonly summary: string;
+  readonly warnings: readonly string[];
+  readonly expected: readonly ExpectedTarget[];
+}
+
+/** True for an empty object or an empty array. */
+function isEmptyContainer(value: JsonValue): boolean {
+  if (Array.isArray(value)) {
+    return value.length === 0;
+  }
+  return isJsonObject(value) && Object.keys(value).length === 0;
+}
+
+/**
+ * Plans one key-scoped JSON edit. Reads only; `apply` commits through commitJsonPatch, which rebases on the
+ * current text and keeps every other key. An empty value on an absent key is a noop that never creates a file.
+ */
+export async function planJsonKeyPatch(
+  fs: ReadFs,
+  input: JsonKeyPlanInput,
+): Promise<FileChangePlan> {
+  const { scope, path, keyPath, value, summary } = input;
+  const warnings = [...input.warnings];
+  const expected = [...input.expected];
+
+  const cur = await readJsonIfExists(fs, path);
+  if (
+    isEmptyContainer(value) &&
+    (cur === undefined || getAtPath(cur.value, keyPath) === undefined)
+  ) {
+    return {
+      scope,
+      path,
+      action: "noop",
+      summary,
+      before: cur?.text,
+      after: cur?.text,
+      warnings,
+      expected,
+      apply: () => Promise.resolve({ status: "unchanged", backupPath: undefined }),
+    };
+  }
+
+  const planned = await planJsonPatch(fs, path, keyPath, value);
+  let action: FileChangeAction = "noop";
+  if (planned.before === undefined) {
+    action = "create";
+  } else if (planned.changed) {
+    action = "patch-json";
+  }
+
+  return {
+    scope,
+    path,
+    action,
+    summary,
+    before: planned.before,
+    after: planned.after,
+    warnings,
+    expected,
+    apply: async (ctx: ApplyContext): Promise<ApplyResult> => {
+      const result = await commitJsonPatch(ctx.fs, planned, { backup: ctx.backup });
+      if (result.written) {
+        return { status: "written", backupPath: result.backupPath };
+      }
+      return { status: "unchanged", backupPath: undefined };
+    },
+  };
+}
+
+/** The native object an adapter wants for one server, with its full definition. */
+export interface DesiredEntry {
+  readonly def: McpServerDefinition;
+  /** Canonical native object from the adapter. */
+  readonly entry: JsonObject;
+}
+
+export interface MergeEntriesInput {
+  readonly harness: string;
+  readonly path: string;
+  readonly native: ReadonlyMap<string, NativeEntry>;
+  readonly desired: ReadonlyMap<string, DesiredEntry>;
+  readonly force: boolean;
+}
+
+/**
+ * Merges desired servers into the native server map (Q1). Output order: native names that survive, in native order,
+ * then new desired names sorted. Unknown in-entry keys (`extras`) are kept only when the transport is unchanged.
+ */
+export function mergeServerEntries(input: MergeEntriesInput): {
+  readonly value: JsonObject;
+  readonly warnings: readonly string[];
+} {
+  const { harness, path, native, desired, force } = input;
+  const warnings: string[] = [];
+  const out: [string, JsonValue][] = [];
+
+  for (const [name, entry] of native) {
+    const want = desired.get(name);
+    if (entry.kind === "opaque") {
+      const detail = `${harness}: MCP server "${name}" in ${path} has an unsupported transport (${entry.reason})`;
+      if (want === undefined) {
+        out.push([name, entry.raw]);
+        warnings.push(`${detail}; left unchanged and not managed by yoke`);
+      } else if (!force) {
+        throw new NativeStateError(
+          `${detail} and yoke defines it; rerun with --force to replace it`,
+          path,
+          name,
+        );
+      } else {
+        out.push([name, want.entry]);
+        warnings.push(`${detail}; replaced because --force was given`);
+      }
+      continue;
+    }
+
+    // Managed and not desired: dropped. The drift report shows it.
+    if (want === undefined) {
+      continue;
+    }
+    if (want.def.transport === entry.def.transport) {
+      const merged = new Map<string, JsonValue>(Object.entries(want.entry));
+      for (const [key, value] of Object.entries(entry.extras)) {
+        if (!merged.has(key)) {
+          merged.set(key, value);
+        }
+      }
+      out.push([name, Object.fromEntries(merged)]);
+    } else {
+      out.push([name, want.entry]);
+      const dropped = Object.keys(entry.extras);
+      if (dropped.length > 0) {
+        warnings.push(
+          `${harness}: MCP server "${name}" in ${path}: dropped native keys ${dropped.join(",")} because the transport changed`,
+        );
+      }
+    }
+  }
+
+  const nativeNames = new Set(native.keys());
+  const added = [...desired]
+    .filter(([name]) => !nativeNames.has(name))
+    .sort(([a], [b]) => byCodeUnit(a, b));
+  for (const [name, want] of added) {
+    out.push([name, want.entry]);
+  }
+
+  return { value: Object.fromEntries(out), warnings };
+}
+
+/**
+ * Computes the new contents of a shared native name list (Q3). `after` removes only names yoke owned that are no
+ * longer desired, keeps native order, and appends missing desired names sorted. `owned` claims a desired name
+ * unless the user already listed it natively without yoke having added it (A7).
+ */
+export function updateOwnedList(input: {
+  readonly native: readonly string[];
+  readonly lockOwned: readonly string[];
+  readonly desired: readonly string[];
+}): { readonly after: readonly string[]; readonly owned: readonly string[] } {
+  const desired = [...new Set(input.desired)];
+  const desiredSet = new Set(desired);
+  const lockOwned = new Set(input.lockOwned);
+  const native = new Set(input.native);
+
+  const kept = input.native.filter((name) => !(lockOwned.has(name) && !desiredSet.has(name)));
+  const keptSet = new Set(kept);
+  const added = desired.filter((name) => !keptSet.has(name)).sort(byCodeUnit);
+
+  const owned = desired
+    .filter((name) => !(native.has(name) && !lockOwned.has(name)))
+    .sort(byCodeUnit);
+
+  return { after: [...kept, ...added], owned };
+}
+
+const ENV_REFERENCE = /\$\{[A-Za-z_][A-Za-z0-9_]*\}/;
+
+/** True when an env value (stdio) or header value (http, sse) contains a ${VAR} reference. */
+export function usesEnvReference(def: McpServerDefinition): boolean {
+  const values =
+    def.transport === "stdio" ? Object.values(def.env ?? {}) : Object.values(def.headers ?? {});
+  return values.some((value) => ENV_REFERENCE.test(value));
+}
+
+// #endregion BA2 json plans
