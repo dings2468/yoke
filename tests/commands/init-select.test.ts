@@ -23,7 +23,7 @@ function candidate(path: string, content: string, origin: string): InstructionCa
 }
 
 function importOf(harness: string, instructions: InstructionCandidate | undefined): HarnessImport {
-  return { harness, project: {}, local: {}, userCount: 0, instructions };
+  return { harness, project: {}, local: {}, user: {}, instructions };
 }
 
 function sourcesOf(
@@ -42,7 +42,7 @@ const SOURCES = sourcesOf(
   [
     { name: "alpha", availability: { kind: "available", data: importOf("alpha", ALPHA_FILE) } },
     { name: "beta", availability: { kind: "available", data: importOf("beta", BETA_FILE) } },
-    { name: "gamma", availability: { kind: "empty", userCount: 2 } },
+    { name: "gamma", availability: { kind: "empty" } },
     { name: "delta", availability: { kind: "unreadable", reason: "bad json" } },
     { name: "epsilon", availability: { kind: "unsupported" } },
   ],

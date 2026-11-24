@@ -143,7 +143,10 @@ export function selectFromTokens(
 }
 
 function describeImport(data: HarnessImport): string {
-  const servers = Object.keys(data.project).length + Object.keys(data.local).length;
+  const servers =
+    Object.keys(data.project).length +
+    Object.keys(data.local).length +
+    Object.keys(data.user).length;
   const parts: string[] = [];
   if (servers > 0) {
     parts.push(`${servers} MCP server${servers === 1 ? "" : "s"}`);

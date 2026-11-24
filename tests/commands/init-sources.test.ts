@@ -117,7 +117,7 @@ describe("listImportSources", () => {
     if (entry?.availability.kind !== "available") {
       throw new Error("expected available");
     }
-    expect(entry.availability.data.userCount).toBe(2);
+    expect(Object.keys(entry.availability.data.user)).toEqual(["u1", "u2"]);
     expect(Object.keys(entry.availability.data.project)).toEqual(["gh"]);
     expect(Object.keys(entry.availability.data.local)).toEqual(["loc"]);
     expect(entry.availability.data.instructions).toEqual({
@@ -128,7 +128,7 @@ describe("listImportSources", () => {
     expect(sources.files.map((f) => f.path)).toEqual([join(repo, "ALPHA.md")]);
   });
 
-  it("reports user-only servers as empty and counts them without importing", async () => {
+  it("treats a harness with only user-level servers as available", async () => {
     const repo = join(dir, "repo");
     await mkdir(repo);
     const adapter = fakeAdapter("beta", () =>
@@ -147,8 +147,28 @@ describe("listImportSources", () => {
       fs: createNodeFs(),
       canonicalPath: join(repo, "AGENTS.md"),
     });
-    expect(sources.harnesses[0]?.availability).toEqual({ kind: "empty", userCount: 2 });
+    const availability = sources.harnesses[0]?.availability;
+    expect(availability?.kind).toBe("available");
+    if (availability?.kind !== "available") {
+      throw new Error("expected available");
+    }
+    expect(Object.keys(availability.data.user)).toEqual(["one", "two"]);
+    expect(availability.data.project).toEqual({});
+    expect(availability.data.local).toEqual({});
     expect(sources.files).toEqual([]);
+  });
+
+  it("reports empty only when every tier and the instructions are empty", async () => {
+    const repo = join(dir, "repo");
+    await mkdir(repo);
+    const adapter = fakeAdapter("gamma", () => Promise.resolve({ user: { mcps: {} } }));
+    const sources = await listImportSources({
+      adapters: [adapter],
+      repoPath: repo,
+      fs: createNodeFs(),
+      canonicalPath: join(repo, "AGENTS.md"),
+    });
+    expect(sources.harnesses[0]?.availability).toEqual({ kind: "empty" });
   });
 
   it("skips symlinked and generated project instructions", async () => {
