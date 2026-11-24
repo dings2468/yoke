@@ -5,16 +5,24 @@
  * which receives the writable Fs and the backup session. No clock, no process state, no home directory lookups.
  */
 import { resolve } from "node:path";
+import { compileInstructions, decideInstructionStrategy } from "../core/compiler.js";
 import type { ExpectedTarget } from "../core/drift.js";
 import {
+  atomicWrite,
   type BackupSession,
+  ConcurrentModificationError,
   commitJsonPatch,
+  commitTextWrite,
   type FileStat,
   type Fs,
   isNotFound,
   planJsonPatch,
+  planTextWrite,
   type ReadFs,
   readJsonIfExists,
+  readTextIfExists,
+  relativeLinkTarget,
+  safeSymlink,
 } from "../core/fs-safe.js";
 import type { Env, Exec } from "../core/git.js";
 import {
@@ -519,3 +527,167 @@ export function usesEnvReference(def: McpServerDefinition): boolean {
 }
 
 // #endregion BA2 json plans
+
+// #region BA3 instruction plans
+
+export interface InstructionTargetInput {
+  /** Harness name passed to compileInstructions as the target. */
+  readonly target: string;
+  readonly validTargets: readonly string[];
+  readonly scope: Scope;
+  /** Native instructions path that yoke links or writes. */
+  readonly linkPath: string;
+  /** Canonical instructions source (absolute). */
+  readonly sourcePath: string;
+  /** Local override source (absolute), or undefined when the adapter does not read one. */
+  readonly localPath: string | undefined;
+  readonly preferSymlink: boolean;
+  readonly warnings: readonly string[];
+}
+
+/** Throws ConcurrentModificationError unless `linkPath` is still a symlink whose target text is `target`. */
+async function assertSameLink(fs: Fs, linkPath: string, target: string): Promise<void> {
+  let stat: FileStat;
+  try {
+    stat = await fs.lstat(linkPath);
+  } catch (err: unknown) {
+    if (isNotFound(err)) throw new ConcurrentModificationError(linkPath);
+    throw err;
+  }
+  if (!stat.isSymbolicLink || (await fs.readlink(linkPath)) !== target) {
+    throw new ConcurrentModificationError(linkPath);
+  }
+}
+
+function planInstructionSymlink(
+  input: InstructionTargetInput,
+  snap: FileSnapshot,
+  reasonText: string,
+): FileChangePlan {
+  const rel = relativeLinkTarget(input.linkPath, input.sourcePath);
+  const unchanged = snap.kind === "symlink" && snap.target === rel;
+  const before = snap.kind === "file" ? snap.content : undefined;
+  const linkBefore = snap.kind === "symlink" ? snap.target : undefined;
+  return {
+    scope: input.scope,
+    path: input.linkPath,
+    action: unchanged ? "noop" : "symlink",
+    summary: `symlink ${input.linkPath} -> ${rel}${reasonText}`,
+    before,
+    after: undefined,
+    link: { before: linkBefore, after: rel },
+    warnings: input.warnings,
+    expected: [
+      {
+        kind: "instructions",
+        scope: input.scope,
+        instructions: { kind: "symlink", path: input.linkPath, target: rel },
+      },
+    ],
+    apply: async (ctx: ApplyContext): Promise<ApplyResult> => {
+      const result = await safeSymlink(ctx.fs, input.linkPath, input.sourcePath, {
+        backup: ctx.backup,
+      });
+      if (result.kind === "fallback") {
+        return { status: "fallback", backupPath: undefined, detail: result.detail };
+      }
+      return {
+        status: result.kind === "linked" ? "written" : "unchanged",
+        backupPath: result.backupPath,
+      };
+    },
+  };
+}
+
+async function planInstructionCompile(
+  ctx: AdapterContext,
+  input: InstructionTargetInput,
+  snap: FileSnapshot,
+  content: string,
+  reasonText: string,
+): Promise<FileChangePlan> {
+  const expected: readonly ExpectedTarget[] = [
+    {
+      kind: "instructions",
+      scope: input.scope,
+      instructions: { kind: "file", path: input.linkPath, content },
+    },
+  ];
+
+  if (snap.kind === "symlink") {
+    // The link target is never written: the link is replaced by a regular file (SPEC §8.2).
+    const linkTarget = snap.target;
+    return {
+      scope: input.scope,
+      path: input.linkPath,
+      action: "update",
+      summary: `replace symlink ${input.linkPath} with compiled instructions${reasonText}`,
+      before: undefined,
+      after: content,
+      link: { before: linkTarget },
+      warnings: input.warnings,
+      expected,
+      apply: async (applyCtx: ApplyContext): Promise<ApplyResult> => {
+        await assertSameLink(applyCtx.fs, input.linkPath, linkTarget);
+        const backupPath = await applyCtx.backup.backup(input.linkPath, { kind: "link-text" });
+        await atomicWrite(applyCtx.fs, input.linkPath, content, { followSymlinks: false });
+        return { status: "written", backupPath };
+      },
+    };
+  }
+
+  const planned = await planTextWrite(ctx.fs, input.linkPath, content);
+  const action = planned.before === undefined ? "create" : planned.changed ? "update" : "noop";
+  return {
+    scope: input.scope,
+    path: input.linkPath,
+    action,
+    summary: `compile ${input.linkPath}${reasonText}`,
+    before: planned.before,
+    after: content,
+    warnings: input.warnings,
+    expected,
+    apply: async (applyCtx: ApplyContext): Promise<ApplyResult> => {
+      const result = await commitTextWrite(applyCtx.fs, planned, { backup: applyCtx.backup });
+      return { status: result.written ? "written" : "unchanged", backupPath: result.backupPath };
+    },
+  };
+}
+
+/**
+ * Plans one native instructions file. Symlink when decideInstructionStrategy allows it, otherwise a compiled copy.
+ * Returns undefined when the source file does not exist (D9). Reads only; apply() performs the writes.
+ */
+export async function planInstructionTarget(
+  ctx: AdapterContext,
+  input: InstructionTargetInput,
+): Promise<FileChangePlan | undefined> {
+  const source = await readTextIfExists(ctx.fs, input.sourcePath);
+  if (source === undefined) {
+    return undefined;
+  }
+  const local =
+    input.localPath === undefined ? undefined : await readTextIfExists(ctx.fs, input.localPath);
+  const strategy = decideInstructionStrategy({
+    preferSymlink: input.preferSymlink,
+    source,
+    local,
+    symlinksSupported: ctx.symlinksSupported,
+    validTargets: input.validTargets,
+  });
+  const snap = await readFileSnapshot(ctx.fs, input.linkPath);
+
+  if (strategy.kind === "symlink") {
+    return planInstructionSymlink(input, snap, "");
+  }
+  const reasonText = ` [${strategy.reasons.join(", ")}]`;
+  const content = compileInstructions({
+    source,
+    local,
+    target: input.target,
+    validTargets: input.validTargets,
+  });
+  return planInstructionCompile(ctx, input, snap, content, reasonText);
+}
+
+// #endregion BA3 instruction plans
