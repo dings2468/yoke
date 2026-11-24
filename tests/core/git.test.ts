@@ -45,8 +45,8 @@ function fail(exitCode: number, stderr: string): ExecResult {
   return { stdout: "", stderr, exitCode };
 }
 
-const DIFF_HEAD = "diff --stat --no-color --no-ext-diff HEAD";
-const DIFF_CACHED = "diff --stat --no-color --no-ext-diff --cached";
+const DIFF_HEAD = "diff --stat --no-color --no-ext-diff HEAD --";
+const DIFF_CACHED = "diff --stat --no-color --no-ext-diff --cached --";
 
 describe("git helpers (fake exec)", () => {
   it("gitRepoRoot returns undefined outside a repository (exit 128)", async () => {
@@ -54,6 +54,33 @@ describe("git helpers (fake exec)", () => {
       new Map([["rev-parse --show-toplevel", fail(128, "fatal: not a git repository")]]),
     );
     await expect(gitRepoRoot({ exec, cwd: "/nowhere" })).resolves.toBeUndefined();
+  });
+
+  it("gitRepoRoot throws GitError with stderr on exit 128 'dubious ownership', not 'not a repository'", async () => {
+    const stderr =
+      "fatal: detected dubious ownership in repository at '/repo'\n" +
+      "To add an exception for this directory, call:\n\n\tgit config --global --add safe.directory /repo\n";
+    const { exec } = fakeExec(new Map([["rev-parse --show-toplevel", fail(128, stderr)]]));
+    const err = await gitRepoRoot({ exec, cwd: "/repo" }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(GitError);
+    const gitErr = err as GitError;
+    expect(gitErr.exitCode).toBe(128);
+    expect(gitErr.stderr).toBe(stderr);
+    expect(gitErr.message).toContain("dubious ownership");
+    expect(gitErr.message).not.toBe("not a git repository");
+  });
+
+  it("gitSnapshot propagates a dubious-ownership error instead of reporting no repository", async () => {
+    const { exec } = fakeExec(
+      new Map([
+        ["rev-parse --show-toplevel", fail(128, "fatal: detected dubious ownership in repository")],
+      ]),
+    );
+    const err = await gitSnapshot({ exec, cwd: "/repo" }, { includeDiffStat: false }).catch(
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(GitError);
+    expect((err as GitError).message).toContain("dubious ownership");
   });
 
   it("gitRepoRoot strips the trailing newline from the root path", async () => {
@@ -92,6 +119,19 @@ describe("git helpers (fake exec)", () => {
     );
     await expect(gitDiffStat({ exec, cwd: "/repo" })).resolves.toBe("");
     expect(calls.map((c) => c.args.join(" "))).toContain(DIFF_CACHED);
+  });
+
+  it("gitDiffStat terminates its argument list with '--' so a file named HEAD is not ambiguous", async () => {
+    const { exec, calls } = fakeExec(
+      new Map([
+        ["rev-parse --verify -q HEAD", ok("abc123\n")],
+        [DIFF_HEAD, ok("")],
+      ]),
+    );
+    await gitDiffStat({ exec, cwd: "/repo" });
+    const diffCall = calls.find((c) => c.args[0] === "diff");
+    expect(diffCall?.args).toEqual(["diff", "--stat", "--no-color", "--no-ext-diff", "HEAD", "--"]);
+    expect(diffCall?.args).toContain("--");
   });
 
   it("gitSnapshot runs git from the repository root, not from the subdirectory", async () => {
