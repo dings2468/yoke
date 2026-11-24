@@ -3,11 +3,13 @@
  * environment value, stream, and adapter arrives through `CliDeps`, so tests can drive `runCli` directly.
  * `src/cli.ts` is the only module that builds real dependencies.
  */
-import { Command, CommanderError } from "commander";
+import { Command, CommanderError, Option } from "commander";
 import type { AdapterFactory } from "./adapters/registry.js";
 import { type DoctorPlanner, runDoctor } from "./commands/doctor.js";
 import { doctorExitCode, formatDoctorReport, shouldUseColor } from "./commands/doctor-format.js";
 import { EXIT_OK, EXIT_PROBLEMS, EXIT_USAGE, UsageError } from "./commands/exit.js";
+import { createClackPrompts, runInit } from "./commands/init.js";
+import type { SecretPolicy } from "./commands/init-convert.js";
 import type { Fs, ReadFs } from "./core/fs-safe.js";
 import type { Env, Exec } from "./core/git.js";
 import { buildSyncPlan } from "./core/plan.js";
@@ -77,6 +79,54 @@ export function buildProgram(deps: CliDeps, setExit: (code: number) => void): Co
       );
       setExit(doctorExitCode(report));
     });
+
+  // #region I-CLI init
+  program
+    .command("init")
+    .description(
+      "Create yoke.yaml, yoke.local.yaml, AGENTS.md, and .gitignore lines. Can import from harnesses.",
+    )
+    .option(
+      "--import-from <source...>",
+      "harness name (MCPs and instructions), name:mcps, or an instruction file path",
+    )
+    .addOption(
+      new Option("--secrets <policy>", "where literal secrets go")
+        .choices(["local", "ref"])
+        .default("local"),
+    )
+    .option("--no-gitignore", "do not write .gitignore lines")
+    .option("--force", "overwrite existing yoke files (originals are backed up)")
+    .action(
+      async (opts: {
+        importFrom?: string[];
+        secrets: SecretPolicy;
+        gitignore: boolean;
+        force: boolean;
+      }) => {
+        const code = await runInit(
+          {
+            importFrom: opts.importFrom,
+            secrets: opts.secrets,
+            gitignore: opts.gitignore,
+            force: opts.force,
+          },
+          {
+            io: deps.io,
+            cwd: deps.cwd,
+            homeDir: deps.homeDir,
+            env: deps.env,
+            fs: deps.fs,
+            exec: deps.exec,
+            now: deps.now,
+            factories: deps.factories,
+            prompts: createClackPrompts(),
+          },
+        );
+        setExit(code);
+      },
+    );
+  // #endregion I-CLI init
 
   return program;
 }
