@@ -5,8 +5,9 @@
  * goes through an injected ReadFs, and nothing here touches the disk, the environment, or the clock beyond `env`.
  */
 import { isAbsolute, join } from "node:path";
-import { isNotFound, type ReadFs, readJsonIfExists } from "../core/fs-safe.js";
-import type { Env } from "../core/git.js";
+import { localOverridePath } from "../core/compiler.js";
+import { isNotFound, type ReadFs, readJsonIfExists, toReadFs } from "../core/fs-safe.js";
+import type { Env, ExecResult } from "../core/git.js";
 import {
   getAtPath,
   isJsonObject,
@@ -28,23 +29,30 @@ import {
 } from "../core/schema.js";
 import {
   type AdapterContext,
+  advisoryPlan,
   type DesiredEntry,
   definedNames,
+  disabledNames,
   type FileChangePlan,
+  type HarnessAdapter,
+  type HarnessCapabilities,
+  type HarnessStatus,
+  instructionSources,
   layerView,
   mergeServerEntries,
   type NativeEntry,
   NativeStateError,
+  planInstructionTarget,
   planJsonKeyPatch,
   readFileSnapshot,
   toDefinition,
   toNativeInstructions,
+  updateOwnedList,
 } from "./base.js";
 
 export const CLAUDE_NAME = "claude";
-/** Lock list ids for Claude's two per-project disable lists (decision D7). */
+/** Lock list id for Claude's per-project disable list of user-scope servers (decision D7). */
 export const DISABLED_SERVERS_LIST = "disabled-servers";
-export const DISABLED_MCPJSON_LIST = "disabled-mcpjson";
 
 export interface ClaudePaths {
   readonly userConfig: string;
@@ -81,10 +89,6 @@ export function localMcpKey(repoKey: string): JsonKeyPath {
 
 export function disabledServersKey(repoKey: string): JsonKeyPath {
   return ["projects", repoKey, "disabledMcpServers"];
-}
-
-export function disabledMcpjsonKey(repoKey: string): JsonKeyPath {
-  return ["projects", repoKey, "disabledMcpjsonServers"];
 }
 
 /** The `projects` key for a repository: its realpath, or the given path when it does not exist (decision D8). */
@@ -357,21 +361,14 @@ export async function readClaudeNativeState(
     readClaudeServers(valueAt(repoEntry, ["mcpServers"]), paths.userConfig),
   );
 
-  const ownedLists = ctx.lock?.harnesses[stateKey(CLAUDE_NAME, "local")]?.ownedNames ?? {};
-  const disableLists: readonly { readonly id: string; readonly key: string }[] = [
-    { id: DISABLED_SERVERS_LIST, key: "disabledMcpServers" },
-    { id: DISABLED_MCPJSON_LIST, key: "disabledMcpjsonServers" },
-  ];
+  const claimed =
+    ctx.lock?.harnesses[stateKey(CLAUDE_NAME, "local")]?.ownedNames?.[DISABLED_SERVERS_LIST] ?? [];
   const owned = new Set<string>();
-  for (const { id, key } of disableLists) {
-    const claimed = ownedLists[id] ?? [];
-    if (claimed.length === 0) {
-      continue;
-    }
+  if (claimed.length > 0) {
     const native = readNameList(
-      valueAt(repoEntry, [key]),
+      valueAt(repoEntry, ["disabledMcpServers"]),
       paths.userConfig,
-      key,
+      "disabledMcpServers",
       ctx.force ?? false,
       warn,
     );
@@ -504,3 +501,268 @@ export async function planClaudeMcp(
 }
 
 // #endregion CL2 mcp
+
+// #region CL3 sync
+
+/** D11: sync and detect only. No session methods are implemented, so sessionExport is false. */
+export const CLAUDE_CAPABILITIES: HarnessCapabilities = {
+  staticMcp: true,
+  staticInstructions: true,
+  reverseRead: true,
+  sessionExport: false,
+  sessionImport: "handoff-file-only",
+};
+
+/** The `mcps` map one plan expects for a scope, or undefined when that scope was not planned. */
+function plannedMcps(
+  plans: readonly FileChangePlan[],
+  scope: Scope,
+): Record<string, McpServerDefinition> | undefined {
+  for (const plan of plans) {
+    if (plan.scope !== scope) {
+      continue;
+    }
+    for (const target of plan.expected) {
+      if (target.kind === "mcps") {
+        return { ...target.mcps };
+      }
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Lock `mcps` for owned disables: each name's lower-tier definition (project first, then user), with `enabled: false`.
+ * Names with no definition in `post.user` are left out.
+ */
+function disabledDefs(
+  names: readonly string[],
+  post: {
+    readonly user: Readonly<Record<string, McpServerDefinition>>;
+    readonly project: Readonly<Record<string, McpServerDefinition>>;
+  },
+): Record<string, McpServerDefinition> {
+  const out: Record<string, McpServerDefinition> = {};
+  for (const name of names) {
+    const lower = Object.hasOwn(post.project, name) ? post.project[name] : post.user[name];
+    if (lower !== undefined) {
+      out[name] = { ...lower, enabled: false };
+    }
+  }
+  return out;
+}
+
+/**
+ * Plans Claude's per-project disable list for user-scope servers (`projects[<repo>].disabledMcpServers` in the user
+ * config). Runs only when `local` is in `opts.scopes`. Names come from the merged config's disabled set that exist in
+ * the user tier. A malformed list throws unless `force` is set; then nothing is written, the lock's previous owned
+ * names are kept, and each wanted name gets a fallback warning.
+ */
+export async function planClaudeDisables(
+  ctx: AdapterContext,
+  config: ResolvedYokeConfig,
+  opts: SyncOptions,
+  post: {
+    readonly user: Readonly<Record<string, McpServerDefinition>>;
+    readonly project: Readonly<Record<string, McpServerDefinition>>;
+  },
+): Promise<FileChangePlan[]> {
+  if (!opts.scopes.includes("local")) {
+    return [];
+  }
+  const paths = claudePaths(ctx.homeDir, ctx.env, opts.repoPath);
+  const repoKey = await claudeRepoKey(ctx.fs, opts.repoPath);
+  const lockOwned =
+    ctx.lock?.harnesses[stateKey(CLAUDE_NAME, "local")]?.ownedNames?.[DISABLED_SERVERS_LIST] ?? [];
+  const desired = disabledNames(config).filter((name) => Object.hasOwn(post.user, name));
+
+  const file = await readJsonIfExists(ctx.fs, paths.userConfig);
+  const root = topLevelObject(file?.value, paths.userConfig);
+  const entry = projectEntry(root, repoKey, paths.userConfig);
+  const listDesc = `${paths.userConfig} projects[${repoKey}].disabledMcpServers`;
+
+  let nativeList: readonly string[];
+  try {
+    nativeList = readNameList(
+      valueAt(entry, ["disabledMcpServers"]),
+      paths.userConfig,
+      "disabledMcpServers",
+      false,
+    );
+  } catch (err: unknown) {
+    if (!(err instanceof NativeStateError) || ctx.force !== true) {
+      throw err;
+    }
+    const warnings = desired.map(
+      (name) =>
+        `claude: cannot disable "${name}" (local scope, yoke.local.yaml): it is still defined in Claude user config ${paths.userConfig} and will load in this repo; run /mcp disable ${name} inside Claude in this repo (do not use "claude mcp remove", which deletes it everywhere and wipes its OAuth tokens)`,
+    );
+    const kept = lockOwned.filter((name) => Object.hasOwn(post.user, name));
+    return [
+      {
+        ...advisoryPlan(
+          "local",
+          paths.userConfig,
+          `claude: ${listDesc} is malformed; left unchanged`,
+          warnings,
+        ),
+        expected: [
+          { kind: "owned-names", scope: "local", list: DISABLED_SERVERS_LIST, names: lockOwned },
+          { kind: "mcps", scope: "local", mcps: disabledDefs(kept, post) },
+        ],
+      },
+    ];
+  }
+
+  const { after, owned } = updateOwnedList({ native: nativeList, lockOwned, desired });
+  const lines = [
+    ...owned
+      .filter((name) => !nativeList.includes(name))
+      .map((name) => `claude: disabled user server "${name}" for this repo (${listDesc})`),
+    ...lockOwned
+      .filter((name) => nativeList.includes(name) && !after.includes(name))
+      .map((name) => `claude: re-enabled user server "${name}" for this repo (${listDesc})`),
+  ];
+  const plan = await planJsonKeyPatch(ctx.fs, {
+    scope: "local",
+    path: paths.userConfig,
+    keyPath: disabledServersKey(repoKey),
+    value: [...after],
+    summary: lines.length > 0 ? lines.join("\n") : `claude: ${listDesc} unchanged`,
+    warnings: [],
+    expected: [
+      { kind: "owned-names", scope: "local", list: DISABLED_SERVERS_LIST, names: owned },
+      { kind: "mcps", scope: "local", mcps: disabledDefs(owned, post) },
+    ],
+  });
+  return [plan];
+}
+
+/**
+ * Plans every Claude file for the requested scopes: MCP keys, disable list, and instructions. Reads only. Each
+ * FileChangePlan carries an apply closure built by the shared commit functions, which are the only writers.
+ */
+export async function planClaudeSync(
+  ctx: AdapterContext,
+  config: ResolvedYokeConfig,
+  opts: SyncOptions,
+): Promise<FileChangePlan[]> {
+  const mcp = await planClaudeMcp(ctx, config, opts);
+  const native = await readClaudeNativeState(ctx, opts.repoPath);
+  const post = {
+    user: plannedMcps(mcp, "user") ?? native.user?.mcps ?? {},
+    project: plannedMcps(mcp, "project") ?? native.project?.mcps ?? {},
+  };
+  const disables = await planClaudeDisables(ctx, config, opts, post);
+
+  const paths = claudePaths(ctx.homeDir, ctx.env, opts.repoPath);
+  const sources = instructionSources(config, {
+    repoPath: opts.repoPath,
+    userConfigDir: ctx.userConfigDir,
+  });
+  const compiled = config.mode === "compiled";
+  const instructions: FileChangePlan[] = [];
+  const keep = (plan: FileChangePlan | undefined): void => {
+    if (plan !== undefined) {
+      instructions.push(plan);
+    }
+  };
+  if (opts.scopes.includes("user")) {
+    keep(
+      await planInstructionTarget(ctx, {
+        target: CLAUDE_NAME,
+        validTargets: config.harnesses,
+        scope: "user",
+        linkPath: paths.userInstructions,
+        sourcePath: sources.user,
+        localPath: undefined,
+        preferSymlink: config.instructions.preferSymlink,
+        warnings: [],
+      }),
+    );
+  }
+  if (opts.scopes.includes("project")) {
+    keep(
+      await planInstructionTarget(ctx, {
+        target: CLAUDE_NAME,
+        validTargets: config.harnesses,
+        scope: "project",
+        linkPath: paths.projectInstructions,
+        sourcePath: sources.project,
+        localPath: compiled ? localOverridePath(sources.project) : undefined,
+        preferSymlink: config.instructions.preferSymlink,
+        warnings: [],
+      }),
+    );
+  }
+  if (opts.scopes.includes("local") && !compiled) {
+    keep(
+      await planInstructionTarget(ctx, {
+        target: CLAUDE_NAME,
+        validTargets: config.harnesses,
+        scope: "local",
+        linkPath: paths.localInstructions,
+        sourcePath: localOverridePath(sources.project),
+        localPath: undefined,
+        preferSymlink: config.instructions.preferSymlink,
+        warnings: [],
+      }),
+    );
+  }
+
+  return [...mcp, ...disables, ...instructions];
+}
+
+/**
+ * Detects the Claude Code CLI. Runs `claude --version` only; never writes. A spawn failure or a non-zero exit means
+ * not installed. `authenticated` is a heuristic: an `oauthAccount` object in the user config, or a non-empty
+ * ANTHROPIC_API_KEY. An unreadable user config counts as not authenticated.
+ */
+export async function detectClaude(ctx: AdapterContext): Promise<HarnessStatus> {
+  let result: ExecResult;
+  try {
+    result = await ctx.exec("claude", ["--version"], { cwd: ctx.homeDir });
+  } catch {
+    return { installed: false, authenticated: false };
+  }
+  if (result.exitCode !== 0) {
+    return { installed: false, authenticated: false };
+  }
+  const version = /\d+\.\d+\.\d+/.exec(result.stdout)?.[0];
+  return {
+    installed: true,
+    authenticated: await claudeAuthenticated(ctx),
+    ...(version === undefined ? {} : { version }),
+  };
+}
+
+async function claudeAuthenticated(ctx: AdapterContext): Promise<boolean> {
+  if ((ctx.env.ANTHROPIC_API_KEY ?? "") !== "") {
+    return true;
+  }
+  const path = claudePaths(ctx.homeDir, ctx.env, ctx.homeDir).userConfig;
+  try {
+    const file = await readJsonIfExists(ctx.fs, path);
+    const root = topLevelObject(file?.value, path);
+    return isJsonObject(valueAt(root, ["oauthAccount"]));
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The Claude adapter. The context's filesystem is narrowed to read methods here, so planning cannot reach a write
+ * method even when the caller passes a full Fs. Writes happen only inside plan apply closures.
+ */
+export function createClaudeAdapter(ctx: AdapterContext): HarnessAdapter {
+  const readCtx: AdapterContext = { ...ctx, fs: toReadFs(ctx.fs) };
+  return {
+    name: CLAUDE_NAME,
+    capabilities: CLAUDE_CAPABILITIES,
+    detect: () => detectClaude(readCtx),
+    readNativeState: (repoPath) => readClaudeNativeState(readCtx, repoPath),
+    syncStatic: (config, opts) => planClaudeSync(readCtx, config, opts),
+  };
+}
+
+// #endregion CL3 sync

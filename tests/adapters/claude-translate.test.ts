@@ -5,7 +5,6 @@ import { NativeStateError } from "../../src/adapters/base.js";
 import {
   claudePaths,
   claudeRepoKey,
-  disabledMcpjsonKey,
   disabledServersKey,
   fromClaudeEntry,
   localMcpKey,
@@ -55,7 +54,6 @@ describe("key paths", () => {
   it("builds the projects keys", () => {
     expect(localMcpKey("/r")).toEqual(["projects", "/r", "mcpServers"]);
     expect(disabledServersKey("/r")).toEqual(["projects", "/r", "disabledMcpServers"]);
-    expect(disabledMcpjsonKey("/r")).toEqual(["projects", "/r", "disabledMcpjsonServers"]);
   });
 });
 
@@ -293,7 +291,6 @@ describe("readClaudeServers and readNameList (fixtures)", () => {
     const entry = projectEntry(root, sb.repo, path);
     expect(entry).toBeDefined();
     expect(readNameList(entry?.disabledMcpServers, path, "disabledMcpServers")).toEqual(["other"]);
-    expect(readNameList(entry?.disabledMcpjsonServers, path, "disabledMcpjsonServers")).toEqual([]);
     expect(readNameList(undefined, path, "x")).toEqual([]);
     expect(projectEntry(root, join(sb.root, "absent"), path)).toBeUndefined();
     expect(projectEntry(undefined, sb.repo, path)).toBeUndefined();
