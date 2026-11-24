@@ -17,20 +17,24 @@ import {
   canonicalJson,
   type DesiredScopeState,
   type DriftReport,
+  detectDrift,
   type ExpectedTarget,
+  groupExpected,
+  type ScopeDriftInput,
   stateEntryFor,
 } from "./drift.js";
 import type { Fs, ReadFs } from "./fs-safe.js";
 import { readTextIfExists, toReadFs } from "./fs-safe.js";
 import type { Exec } from "./git.js";
 import type { ResolvedYokeConfig, Scope, StateEntry, StateKey, YokeStateLock } from "./schema.js";
-import { HarnessNameSchema, ScopeSchema, YokeStateLockSchema } from "./schema.js";
+import { HarnessNameSchema, ScopeSchema, stateKey, YokeStateLockSchema } from "./schema.js";
 import {
   defaultScopePaths,
   type Env,
   loadScopeInputs,
   parseScopeConfig,
   resolveConfig,
+  userConfigDir,
 } from "./scopes.js";
 
 // #region P2 types and lock io
@@ -478,3 +482,177 @@ export function carryOverFallbacks(
   return { ...update, entries, changed: lockChanged(update.previous, entries) };
 }
 // #endregion P5 pure helpers
+
+// #region P6 buildSyncPlan
+/** A (harness, scope) pair an adapter planned in this run. `key` is the lock key; `scope` picks its lock file. */
+interface ProcessedKey {
+  readonly key: StateKey;
+  readonly scope: Scope;
+}
+
+/** The lock entry for one key, when its scope's lock file loaded as ok. Missing, corrupt, and unreadable locks give undefined. */
+function lockEntryFor(
+  loads: ReadonlyMap<LockFileKind, LockLoad>,
+  scope: Scope,
+  key: StateKey,
+): StateEntry | undefined {
+  const load = loads.get(lockFileFor(scope));
+  if (load === undefined || load.status !== "ok") return undefined;
+  return load.lock.harnesses[key];
+}
+
+/**
+ * Plans a sync without writing anything. Reads go through `req.readFs` only; no `Fs` is ever used here, and no
+ * clock is read. Throws SyncRequestError, ScopeConfigError, NativeStateError, FsSafeError, PlanConflictError, or a
+ * plain Error from an adapter when its input is malformed. Warnings are one deduplicated list (D7).
+ */
+export async function buildSyncPlan(req: PlanRequest): Promise<SyncPlan> {
+  validateRequest(req);
+  const fs = toReadFs(req.readFs);
+  const ucd = userConfigDir(req.env, req.homeDir);
+  const backupRoot = join(ucd, "backups");
+
+  const loaded = await loadPass(fs, req, ucd);
+  if (loaded.pass === undefined) {
+    return {
+      plans: [],
+      changes: [],
+      drift: { scopes: [], hasDrift: false },
+      warnings: loaded.warnings,
+      blocked: false,
+      gate: [],
+      locks: [],
+      backupRoot,
+      force: req.force,
+    };
+  }
+  const pass = loaded.pass;
+  const paths = lockPaths({ repoPath: req.repoPath, userConfigDir: ucd });
+
+  const loads = new Map<LockFileKind, LockLoad>();
+  for (const scope of pass.scopes) {
+    const file = lockFileFor(scope);
+    if (loads.has(file)) continue;
+    loads.set(file, await readLock(fs, file === "repo" ? paths.repo : paths.user));
+  }
+  const lockView = mergedLockView([...loads.values()]);
+
+  const core: string[] = [];
+  const collector: string[] = [];
+  const selection = selectHarnesses(pass.config, req.harnesses, req.adapters);
+  core.push(...selection.warnings);
+
+  const ctx: AdapterContext = {
+    homeDir: req.homeDir,
+    userConfigDir: ucd,
+    fs,
+    exec: req.exec,
+    env: req.env,
+    force: req.force,
+    ...(req.symlinksSupported !== undefined ? { symlinksSupported: req.symlinksSupported } : {}),
+    ...(lockView !== undefined ? { lock: lockView } : {}),
+  };
+
+  const plans: FileChangePlan[] = [];
+  const changes: PlannedChange[] = [];
+  const processed: ProcessedKey[] = [];
+  const desired = new Map<StateKey, DesiredScopeState>();
+  const driftInputs: ScopeDriftInput[] = [];
+  const unchecked: string[] = [];
+
+  for (const name of selection.names) {
+    const factory = req.adapters.get(name);
+    if (factory === undefined) continue;
+    const adapter = factory(ctx);
+    const caps = adapter.capabilities;
+    if (!caps.staticMcp && !caps.staticInstructions) {
+      core.push(
+        `harness "${name}" has neither static MCP nor static instructions support; skipped`,
+      );
+      continue;
+    }
+
+    const adapterPlans = await adapter.syncStatic(pass.config, {
+      repoPath: req.repoPath,
+      scopes: pass.scopes,
+      warn: (message: string) => {
+        collector.push(message);
+      },
+    });
+    for (const plan of adapterPlans) {
+      plans.push(plan);
+      changes.push({ harness: name, plan });
+    }
+
+    const grouped = groupExpected(adapterPlans.flatMap((plan) => plan.expected));
+    for (const scope of pass.scopes) {
+      const key = stateKey(name, scope);
+      processed.push({ key, scope });
+      const want = grouped[scope];
+      if (want !== undefined) desired.set(key, want);
+    }
+
+    if (caps.reverseRead) {
+      const native = await adapter.readNativeState(req.repoPath);
+      for (const scope of pass.scopes) {
+        const want = grouped[scope];
+        if (want === undefined) continue;
+        const key = stateKey(name, scope);
+        driftInputs.push({
+          key,
+          native: native[scope],
+          lock: lockEntryFor(loads, scope, key),
+          desired: want,
+        });
+      }
+    } else if (adapterPlans.some((plan) => plan.action !== "noop")) {
+      unchecked.push(name);
+      core.push(`harness "${name}" cannot read its native state, so drift is not checked`);
+    }
+  }
+
+  checkPathConflicts(changes);
+
+  const drift = detectDrift(driftInputs);
+  const gate: GateReason[] = [];
+  const driftKeys = drift.scopes.filter((scope) => scope.hasDrift).map((scope) => scope.key);
+  if (driftKeys.length > 0) gate.push({ kind: "drift", keys: driftKeys });
+  for (const load of loads.values()) {
+    if (load.status === "corrupt") {
+      gate.push({ kind: "lock-corrupt", path: load.path, reason: load.reason });
+    }
+  }
+  for (const harness of unchecked) {
+    gate.push({ kind: "drift-unchecked", harness });
+  }
+
+  const locks: LockUpdate[] = [];
+  for (const [file, load] of loads) {
+    const keys = processed
+      .filter((entry) => lockFileFor(entry.scope) === file)
+      .map((entry) => entry.key);
+    locks.push(
+      computeLockUpdate({ file, path: load.path, previous: load, processed: keys, desired }),
+    );
+  }
+
+  const warnings = collectWarnings([
+    loaded.warnings,
+    core,
+    collector,
+    ...plans.map((plan) => plan.warnings),
+  ]);
+
+  return {
+    plans,
+    changes,
+    drift,
+    warnings,
+    blocked: gate.length > 0 && !req.force,
+    gate,
+    locks,
+    backupRoot,
+    force: req.force,
+  };
+}
+// #endregion P6 buildSyncPlan
