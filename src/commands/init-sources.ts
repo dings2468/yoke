@@ -70,18 +70,19 @@ async function readAvailability(
   }
   const project = state.project?.mcps ?? {};
   const local = state.local?.mcps ?? {};
-  const userCount = Object.keys(state.user?.mcps ?? {}).length;
+  const user = state.user?.mcps ?? {};
   const instructions = importableInstructions(adapter.name, state.project?.instructions);
   if (
     Object.keys(project).length === 0 &&
     Object.keys(local).length === 0 &&
+    Object.keys(user).length === 0 &&
     instructions === undefined
   ) {
-    return { kind: "empty", userCount };
+    return { kind: "empty" };
   }
   return {
     kind: "available",
-    data: { harness: adapter.name, project, local, userCount, instructions },
+    data: { harness: adapter.name, project, local, user, instructions },
   };
 }
 

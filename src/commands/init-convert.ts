@@ -111,7 +111,7 @@ export function buildInitDraft(input: {
       : { content: instructions.content, from: instructions.path };
 
   const notes: string[] = [];
-  const userTotal = selection.harnesses.reduce((sum, h) => sum + h.userCount, 0);
+  const userTotal = selection.harnesses.reduce((sum, h) => sum + Object.keys(h.user).length, 0);
   if (userTotal > 0) {
     notes.push(`${userTotal} user-scope servers left in place`);
   }

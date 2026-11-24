@@ -28,13 +28,14 @@ export interface HarnessImport {
   readonly harness: string;
   readonly project: Readonly<Record<string, McpServerDefinition>>;
   readonly local: Readonly<Record<string, McpServerDefinition>>;
-  readonly userCount: number;
+  /** Servers found only at user level in the native config, keyed by name. Init writes them to the user-scope file. */
+  readonly user: Readonly<Record<string, McpServerDefinition>>;
   readonly instructions: InstructionCandidate | undefined;
 }
 
 export type HarnessAvailability =
   | { readonly kind: "available"; readonly data: HarnessImport }
-  | { readonly kind: "empty"; readonly userCount: number }
+  | { readonly kind: "empty" }
   | { readonly kind: "unreadable"; readonly reason: string }
   | { readonly kind: "unsupported" };
 

@@ -30,7 +30,7 @@ function harness(
   parts: {
     readonly project?: Record<string, McpServerDefinition>;
     readonly local?: Record<string, McpServerDefinition>;
-    readonly userCount?: number;
+    readonly user?: Record<string, McpServerDefinition>;
     readonly instructions?: { readonly path: string; readonly content: string };
   } = {},
 ): HarnessImport {
@@ -38,7 +38,7 @@ function harness(
     harness: name,
     project: parts.project ?? {},
     local: parts.local ?? {},
-    userCount: parts.userCount ?? 0,
+    user: parts.user ?? {},
     instructions:
       parts.instructions === undefined ? undefined : { ...parts.instructions, origin: name },
   };
@@ -178,7 +178,15 @@ describe("buildInitDraft", () => {
 
   it("notes user-scope servers left in place", () => {
     const draft = buildInitDraft({
-      selection: selection([harness("alpha", { userCount: 2 }), harness("beta", { userCount: 1 })]),
+      selection: selection([
+        harness("alpha", {
+          user: {
+            a1: { transport: "stdio", command: "a" },
+            a2: { transport: "stdio", command: "a" },
+          },
+        }),
+        harness("beta", { user: { b1: { transport: "stdio", command: "b" } } }),
+      ]),
       installed: [],
       secrets: "local",
     });
