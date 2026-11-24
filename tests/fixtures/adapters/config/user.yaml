@@ -1,0 +1,26 @@
+version: 1
+mcps:
+  github:
+    transport: stdio
+    command: gh
+    args: ["mcp"]
+    env:
+      GITHUB_TOKEN: "${GITHUB_TOKEN}"
+  linear:
+    transport: http
+    url: "https://mcp.linear.test/mcp"
+    headers:
+      Authorization: "Bearer ${LINEAR_API_KEY}"
+  events:
+    transport: sse
+    url: "https://events.test/sse"
+  oauthy:
+    transport: http
+    url: "https://o.test/mcp"
+  tool:
+    transport: stdio
+    command: t
+  quiet:
+    transport: stdio
+    command: q
+    enabled: false

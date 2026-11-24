@@ -1,0 +1,7 @@
+{
+  "mcpServers": {
+    "bad": {
+      "httpUrl": "https://a.test/mcp"
+    }
+  }
+}
