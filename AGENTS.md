@@ -9,7 +9,9 @@ Read `SPEC.md` before making architectural changes. `SPEC.md` is the source of t
   ```bash
   npm run typecheck   # tsc --noEmit
   npm test            # vitest run
+  npm run check       # biome check (lint + format); `check:fix` applies fixes
   ```
+- **Parallel work uses git worktrees:** any agent or subagent that writes files runs in its own `git worktree` on its own branch (for example `git worktree add ../yoke-<task> -b <branch>`), never in the shared checkout. Merge results back through commits on the task branch.
 
 ## Architecture Rules
 1. **Strict Adapter Isolation:** Harness-specific paths, JSON keys (Claude `type: "http"` + `url` vs. agy `url` only, where `serverUrl` is accepted as a legacy alias on read), and session parsers belong **exclusively** inside `src/adapters/<harness>.ts`. Never branch on harness names (`if (name === "claude")`) inside `src/core/` or `src/commands/`.
