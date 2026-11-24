@@ -44,40 +44,83 @@ export interface ParsedInstructions {
   readonly targets: readonly string[];
 }
 
-const OPEN_TAG = /^\s*<!--\s*yoke:([a-z][a-z0-9-]{0,31})-only\s*-->\s*$/;
-const CLOSE_TAG = /^\s*<!--\s*\/yoke:([a-z][a-z0-9-]{0,31})-only\s*-->\s*$/;
-const TAG_LIKE = /^\s*<!--\s*\/?yoke:/;
-const FENCE_OPEN = /^ {0,3}(`{3,}|~{3,})(.*)$/;
-const FENCE_CLOSE = /^ {0,3}(`{3,}|~{3,})\s*$/;
+// Tags and fences follow CommonMark: 4 or more leading spaces is indented code, not markup.
+// Tabs are not accepted as indentation here, so a tab-led tag line is ordinary text.
+const OPEN_TAG = /^ {0,3}<!--\s*yoke:([a-z][a-z0-9-]{0,31})-only\s*-->\s*$/;
+const CLOSE_TAG = /^ {0,3}<!--\s*\/yoke:([a-z][a-z0-9-]{0,31})-only\s*-->\s*$/;
+const TAG_LIKE = /^ {0,3}<!--\s*\/?yoke:/;
+/** Fence run; applied to the line with its leading spaces removed. */
+const FENCE_RUN = /^(`{3,}|~{3,})(.*)$/;
+const FENCE_CLOSE_RUN = /^(`{3,}|~{3,})\s*$/;
+/** List item marker with 1 to 4 spaces before its content. */
+const LIST_ITEM = /^( *)([-*+]|\d{1,9}[.)])( {1,4})\S/;
 const BOM = "﻿";
 
+function stripBom(text: string): string {
+  return text.startsWith(BOM) ? text.slice(BOM.length) : text;
+}
+
+function leadingSpaces(line: string): number {
+  return line.length - line.replace(/^ +/, "").length;
+}
+
+/**
+ * Indentation of a line relative to the innermost open list item's content column.
+ * Outside a list (or above it) this is the absolute leading-space count.
+ */
+function containerIndent(line: string, listColumn: number | undefined): number {
+  const lead = leadingSpaces(line);
+  return listColumn !== undefined && lead >= listColumn ? lead - listColumn : lead;
+}
+
+/** Matches a fence line only when its own indentation (relative to any list item) is 0 to 3. */
+function matchFence(
+  line: string,
+  listColumn: number | undefined,
+  run: RegExp,
+): RegExpExecArray | null {
+  if (containerIndent(line, listColumn) > 3) {
+    return null;
+  }
+  return run.exec(line.slice(leadingSpaces(line)));
+}
+
 export function parseConditionalBlocks(text: string, opts?: ParseOptions): ParsedInstructions {
-  const lines = text.split("\n");
+  const lines = stripBom(text).split("\n");
   const blocks: ConditionalBlock[] = [];
   const targets: string[] = [];
   const seen = new Set<string>();
   let current: { readonly target: string; readonly openLine: number } | undefined;
-  let fence: { readonly char: string; readonly length: number } | undefined;
+  let fence:
+    | { readonly char: string; readonly length: number; readonly listColumn: number | undefined }
+    | undefined;
+  // Absolute content column of the innermost open list item, if any.
+  let listColumn: number | undefined;
 
   for (let index = 0; index < lines.length; index++) {
     const line = lines[index] ?? "";
     const lineNo = index + 1;
 
     if (fence !== undefined) {
-      const marker = FENCE_CLOSE.exec(line)?.[1];
+      const marker = matchFence(line, fence.listColumn, FENCE_CLOSE_RUN)?.[1];
       if (marker !== undefined && marker[0] === fence.char && marker.length >= fence.length) {
         fence = undefined;
       }
       continue;
     }
 
-    const fenceOpen = FENCE_OPEN.exec(line);
+    // A non-blank line indented less than the item's content column ends the item.
+    if (listColumn !== undefined && line.trim() !== "" && leadingSpaces(line) < listColumn) {
+      listColumn = undefined;
+    }
+
+    const fenceOpen = matchFence(line, listColumn, FENCE_RUN);
     if (fenceOpen !== null) {
       const marker = fenceOpen[1] ?? "";
       const info = fenceOpen[2] ?? "";
       // A backtick fence's info string cannot contain a backtick (CommonMark).
       if (!(marker[0] === "`" && info.includes("`"))) {
-        fence = { char: marker[0] ?? "`", length: marker.length };
+        fence = { char: marker[0] ?? "`", length: marker.length, listColumn };
         continue;
       }
     }
@@ -128,6 +171,12 @@ export function parseConditionalBlocks(text: string, opts?: ParseOptions): Parse
     if (TAG_LIKE.test(line)) {
       throw new InstructionCompileError("malformed yoke conditional tag", "malformed-tag", lineNo);
     }
+
+    // Only items within the container (0 to 3 relative spaces) start a list item.
+    const item = LIST_ITEM.exec(line);
+    if (item !== null && containerIndent(line, listColumn) <= 3) {
+      listColumn = (item[1] ?? "").length + (item[2] ?? "").length + (item[3] ?? "").length;
+    }
   }
 
   if (current !== undefined) {
@@ -141,9 +190,17 @@ export function parseConditionalBlocks(text: string, opts?: ParseOptions): Parse
   return { blocks, targets };
 }
 
-/** Returns the instruction body for one target. Tag lines are dropped; no header is added. */
-export function compileForTarget(text: string, target: string, opts?: ParseOptions): string {
-  const { blocks } = parseConditionalBlocks(text, opts);
+/**
+ * Returns the instruction body for one target. Tag lines are dropped; no header is added.
+ * A leading BOM is removed. `validTargets` is required: a block naming any other target throws
+ * an `unknown-target` InstructionCompileError.
+ */
+export function compileForTarget(
+  text: string,
+  target: string,
+  validTargets: readonly string[],
+): string {
+  const { blocks } = parseConditionalBlocks(text, { validTargets });
   const drop = new Set<number>();
   for (const block of blocks) {
     if (block.target === target) {
@@ -155,7 +212,7 @@ export function compileForTarget(text: string, target: string, opts?: ParseOptio
       }
     }
   }
-  return text
+  return stripBom(text)
     .split("\n")
     .filter((_, index) => !drop.has(index + 1))
     .join("\n");
@@ -173,22 +230,25 @@ export function hasGeneratedHeader(text: string): boolean {
   return firstLine.trimEnd() === GENERATED_HEADER;
 }
 
+/**
+ * Compiles source (and an optional local override) for one target. Both texts have a leading BOM
+ * stripped, so the generated header is always the first line.
+ */
 export function compileInstructions(input: {
   readonly source: string;
   readonly local?: string;
   readonly target: string;
-  readonly validTargets?: readonly string[];
+  readonly validTargets: readonly string[];
 }): string {
-  const opts: ParseOptions =
-    input.validTargets === undefined ? {} : { validTargets: input.validTargets };
   const eol = detectEol(input.source);
-  let out = GENERATED_HEADER + eol + compileForTarget(input.source, input.target, opts);
+  let out =
+    GENERATED_HEADER + eol + compileForTarget(input.source, input.target, input.validTargets);
 
   if (input.local !== undefined) {
     if (!out.endsWith("\n")) {
       out += eol;
     }
-    out += eol + compileForTarget(input.local, input.target, opts);
+    out += eol + compileForTarget(input.local, input.target, input.validTargets);
   }
 
   if (!out.endsWith("\n")) {
