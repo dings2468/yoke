@@ -1,0 +1,33 @@
+{
+  "$comment": "keep me",
+  "mcpServers": {
+    "remote": {
+      "url": "https://a.test/mcp"
+    },
+    "legacy": {
+      "serverUrl": "https://b.test/mcp"
+    },
+    "off": {
+      "command": "x",
+      "disabled": true
+    },
+    "local": {
+      "command": "npx",
+      "args": ["-y", "s"],
+      "env": {
+        "K": "${K}"
+      },
+      "disabled": false
+    },
+    "tool": {
+      "command": "t",
+      "trust": true,
+      "timeout": 5
+    },
+    "wsy": {
+      "type": "ws",
+      "url": "ws://w.test"
+    }
+  },
+  "zeta": 1
+}

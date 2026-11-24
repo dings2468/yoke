@@ -1,0 +1,10 @@
+version: 1
+mcps:
+  scratch:
+    transport: stdio
+    command: scratch
+  pg:
+    transport: stdio
+    command: pg
+    env:
+      PGHOST: localhost

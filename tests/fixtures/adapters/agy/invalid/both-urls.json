@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "bad": {
+      "url": "https://a.test/mcp",
+      "serverUrl": "https://b.test/mcp"
+    }
+  }
+}
