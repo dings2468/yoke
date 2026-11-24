@@ -240,3 +240,299 @@ export function patchJsonReserialize(
   const patched = setAtPath(parseJsonText(original), path, value);
   return serializeJson(patched, detectJsonFormat(original));
 }
+
+export interface JsonPatchResult {
+  readonly content: string;
+  readonly changed: boolean;
+  readonly strategy: "span" | "reserialize" | "create" | "noop";
+}
+
+interface Member {
+  readonly key: string;
+  readonly start: number;
+  readonly keyStart: number;
+  readonly keyEnd: number;
+  readonly valueStart: number;
+  readonly valueEnd: number;
+}
+
+interface ObjectScan {
+  readonly open: number;
+  readonly close: number;
+  readonly members: readonly Member[];
+}
+
+interface Edit {
+  readonly start: number;
+  readonly end: number;
+  readonly text: string;
+}
+
+const WS = " \t\r\n";
+
+function spliceFailed(message: string, cause?: unknown): JsonPatchError {
+  return new JsonPatchError(message, "splice-failed", cause === undefined ? undefined : { cause });
+}
+
+function skipWs(text: string, index: number): number {
+  let i = index;
+  while (i < text.length && WS.includes(text.charAt(i))) {
+    i++;
+  }
+  return i;
+}
+
+function scanString(text: string, index: number): number {
+  if (text.charAt(index) !== '"') {
+    throw spliceFailed(`expected string at ${index}`);
+  }
+  let i = index + 1;
+  while (i < text.length) {
+    const ch = text.charAt(i);
+    if (ch === "\\") {
+      i += 2;
+    } else if (ch === '"') {
+      return i + 1;
+    } else {
+      i++;
+    }
+  }
+  throw spliceFailed("unterminated string");
+}
+
+function scanValue(text: string, index: number): number {
+  const first = text.charAt(index);
+  if (first === '"') {
+    return scanString(text, index);
+  }
+  if (first === "{" || first === "[") {
+    let depth = 0;
+    let i = index;
+    while (i < text.length) {
+      const ch = text.charAt(i);
+      if (ch === '"') {
+        i = scanString(text, i);
+        continue;
+      }
+      if (ch === "{" || ch === "[") {
+        depth++;
+      } else if (ch === "}" || ch === "]") {
+        depth--;
+      }
+      i++;
+      if (depth === 0) {
+        return i;
+      }
+    }
+    throw spliceFailed("unterminated container");
+  }
+  let i = index;
+  while (i < text.length && !",}]".includes(text.charAt(i)) && !WS.includes(text.charAt(i))) {
+    i++;
+  }
+  if (i === index) {
+    throw spliceFailed(`no value at ${index}`);
+  }
+  return i;
+}
+
+/** Scans the members of the object whose `{` is at `open`. */
+function scanObject(text: string, open: number): ObjectScan {
+  if (text.charAt(open) !== "{") {
+    throw spliceFailed(`expected object at ${open}`);
+  }
+  const members: Member[] = [];
+  let start = open + 1;
+  let i = skipWs(text, start);
+  if (text.charAt(i) === "}") {
+    return { open, close: i, members };
+  }
+  for (;;) {
+    const keyStart = skipWs(text, start);
+    const keyEnd = scanString(text, keyStart);
+    let key: unknown;
+    try {
+      key = JSON.parse(text.slice(keyStart, keyEnd));
+    } catch (cause) {
+      throw spliceFailed("invalid key token", cause);
+    }
+    if (typeof key !== "string") {
+      throw spliceFailed("object key is not a string");
+    }
+    i = skipWs(text, keyEnd);
+    if (text.charAt(i) !== ":") {
+      throw spliceFailed(`expected ":" at ${i}`);
+    }
+    const valueStart = skipWs(text, i + 1);
+    const valueEnd = scanValue(text, valueStart);
+    members.push({ key, start, keyStart, keyEnd, valueStart, valueEnd });
+    i = skipWs(text, valueEnd);
+    const delimiter = text.charAt(i);
+    if (delimiter === ",") {
+      start = i + 1;
+      continue;
+    }
+    if (delimiter === "}") {
+      return { open, close: i, members };
+    }
+    throw spliceFailed(`expected "," or "}" at ${i}`);
+  }
+}
+
+/** Whitespace at the start of the line containing `index`. */
+function lineIndent(text: string, index: number): string {
+  const lineStart = text.lastIndexOf("\n", index - 1) + 1;
+  let i = lineStart;
+  while (i < text.length && (text.charAt(i) === " " || text.charAt(i) === "\t")) {
+    i++;
+  }
+  return text.slice(lineStart, i);
+}
+
+function render(value: JsonValue, baseIndent: string, format: JsonFormat): string {
+  return JSON.stringify(value, null, format.indent).replaceAll("\n", format.eol + baseIndent);
+}
+
+/** Wraps `value` in objects for each key in `keys`: ["a","b"] and v becomes {a:{b:v}}. */
+function wrapPath(keys: readonly string[], value: JsonValue): JsonValue {
+  let wrapped = value;
+  for (let i = keys.length - 1; i >= 0; i--) {
+    wrapped = Object.fromEntries([[keys[i] as string, wrapped]]);
+  }
+  return wrapped;
+}
+
+function insertEdit(
+  text: string,
+  scan: ObjectScan,
+  key: string,
+  value: JsonValue,
+  format: JsonFormat,
+): Edit {
+  const member = JSON.stringify(key);
+  const last = scan.members.at(-1);
+  if (last === undefined) {
+    const parentIndent = lineIndent(text, scan.open);
+    const childIndent = parentIndent + format.indent;
+    const body =
+      format.indent === ""
+        ? `${member}:${render(value, "", format)}`
+        : `${format.eol}${childIndent}${member}: ${render(value, childIndent, format)}${format.eol}${parentIndent}`;
+    return { start: scan.open + 1, end: scan.close, text: body };
+  }
+  const sep = text.slice(last.keyEnd, last.valueStart);
+  const indent = lineIndent(text, last.keyStart);
+  const inserted = `,${text.slice(last.start, last.keyStart)}${member}${sep}${render(value, indent, format)}`;
+  return { start: last.valueEnd, end: last.valueEnd, text: inserted };
+}
+
+/**
+ * Returns `text` with the value at `path` replaced, inserted, or deleted, touching only the affected span.
+ * `undefined` deletes the key; a missing key with `undefined` is a no-op. Throws `splice-failed` on anything
+ * the scanner does not understand. Callers must verify the result.
+ */
+export function spliceJsonKey(
+  text: string,
+  path: JsonKeyPath,
+  value: JsonValue | undefined,
+): string {
+  try {
+    const format = detectJsonFormat(text);
+    const rootOpen = skipWs(text, format.bom ? 1 : 0);
+    let scan = scanObject(text, rootOpen);
+    let edit: Edit | undefined;
+
+    for (let depth = 0; depth < path.length; depth++) {
+      const key = path[depth] as string;
+      const member = scan.members.find((m) => m.key === key);
+      const isLeaf = depth === path.length - 1;
+
+      if (member === undefined) {
+        if (value !== undefined) {
+          edit = insertEdit(text, scan, key, wrapPath(path.slice(depth + 1), value), format);
+        }
+        break;
+      }
+
+      if (isLeaf) {
+        if (value === undefined) {
+          edit = deleteEdit(scan, member);
+        } else {
+          edit = {
+            start: member.valueStart,
+            end: member.valueEnd,
+            text: render(value, lineIndent(text, member.keyStart), format),
+          };
+        }
+        break;
+      }
+
+      scan = scanObject(text, member.valueStart);
+    }
+
+    if (edit === undefined) {
+      return text;
+    }
+    return text.slice(0, edit.start) + edit.text + text.slice(edit.end);
+  } catch (error) {
+    if (error instanceof JsonPatchError && error.code === "splice-failed") {
+      throw error;
+    }
+    throw spliceFailed("unexpected JSON layout", error);
+  }
+}
+
+function deleteEdit(scan: ObjectScan, target: Member): Edit {
+  const index = scan.members.indexOf(target);
+  const previous = scan.members[index - 1];
+  const next = scan.members[index + 1];
+  if (scan.members.length === 1) {
+    return { start: scan.open + 1, end: scan.close, text: "" };
+  }
+  if (previous !== undefined) {
+    return { start: previous.valueEnd, end: target.valueEnd, text: "" };
+  }
+  return { start: target.start, end: (next as Member).start, text: "" };
+}
+
+/**
+ * Sets (or deletes, with `undefined`) the key at `path` in `original`, editing only the target span.
+ * Every splice is re-parsed and compared with the expected structure. On a splice or verify failure it
+ * falls back to re-serializing with the detected format. Invalid JSON, a non-object root, and unsafe
+ * integers are never patched and always throw.
+ */
+export function patchJsonKey(
+  original: string | undefined,
+  path: JsonKeyPath,
+  value: JsonValue | undefined,
+): JsonPatchResult {
+  if (original === undefined || original.trim() === "") {
+    const content = serializeJson(setAtPath({}, path, value), DEFAULT_JSON_FORMAT);
+    return { content, changed: true, strategy: "create" };
+  }
+
+  const parsed = parseJsonText(original);
+  if (!isJsonObject(parsed)) {
+    throw new JsonPatchError("JSON root must be an object", "not-an-object");
+  }
+  if (jsonEqual(getAtPath(parsed, path), value)) {
+    return { content: original, changed: false, strategy: "noop" };
+  }
+
+  try {
+    const content = spliceJsonKey(original, path, value);
+    verifyJsonPatch(original, content, path, value);
+    return { content, changed: content !== original, strategy: "span" };
+  } catch (error) {
+    const recoverable =
+      error instanceof JsonPatchError &&
+      (error.code === "splice-failed" || error.code === "verify-failed");
+    if (!recoverable) {
+      throw error;
+    }
+  }
+
+  const content = patchJsonReserialize(original, path, value);
+  verifyJsonPatch(original, content, path, value);
+  return { content, changed: content !== original, strategy: "reserialize" };
+}

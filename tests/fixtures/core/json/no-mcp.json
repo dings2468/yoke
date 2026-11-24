@@ -1,0 +1,8 @@
+{
+  "numStartups": 1,
+  "projects": {
+    "/repo": {
+      "allowedTools": []
+    }
+  }
+}
