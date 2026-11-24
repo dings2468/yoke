@@ -143,7 +143,9 @@ function hasOwnKey(obj: JsonObject, key: string): boolean {
 
 /**
  * Reads one Claude entry. Owned keys are translated; every other key goes to `extras` verbatim. An entry with an unknown
- * transport, or with no `type` and no string `command`, is opaque and kept as-is. Corrupt owned keys throw NativeStateError.
+ * transport, with no `type` and no string `command`, or with owned keys that do not fit its transport is opaque and kept
+ * as-is (SPEC §6: an error only when yoke defines the same name, decided by mergeServerEntries). Corrupt owned keys throw
+ * NativeStateError.
  */
 export function fromClaudeEntry(name: string, raw: JsonValue, path: string): NativeEntry {
   if (!McpServerNameSchema.safeParse(name).success) {
@@ -170,11 +172,11 @@ export function fromClaudeEntry(name: string, raw: JsonValue, path: string): Nat
   const allowed = transport === "stdio" ? STDIO_KEYS : REMOTE_KEYS;
   for (const key of OWNED_KEYS) {
     if (key !== "type" && hasOwnKey(raw, key) && !allowed.has(key)) {
-      throw new NativeStateError(
-        `server "${name}": "${key}" does not fit transport "${transport}"`,
-        path,
-        name,
-      );
+      return {
+        kind: "opaque",
+        raw,
+        reason: `"${key}" does not fit transport "${transport}"`,
+      };
     }
   }
 
@@ -219,26 +221,47 @@ export function readClaudeServers(
   return out;
 }
 
-/** Reads a list of server names (Claude's per-project disable lists). Absent yields []. */
-export function readNameList(
-  raw: JsonValue | undefined,
-  path: string,
-  key: string,
-): readonly string[] {
-  if (raw === undefined) {
-    return [];
-  }
+/** A JSON array of strings as a fresh string array, or undefined when the value is not one. */
+function asNameList(raw: JsonValue): string[] | undefined {
   if (!Array.isArray(raw)) {
-    throw new NativeStateError(`${key} must be an array of strings`, path);
+    return undefined;
   }
   const names: string[] = [];
   for (const item of raw) {
     if (typeof item !== "string") {
-      throw new NativeStateError(`${key} must be an array of strings`, path);
+      return undefined;
     }
     names.push(item);
   }
   return names;
+}
+
+/**
+ * Reads a list of server names (Claude's per-project disable lists). Absent yields []. A malformed list throws
+ * NativeStateError, unless `force` is set: then it counts as "no owned names", the file is not touched, and `warn`
+ * receives one message.
+ */
+export function readNameList(
+  raw: JsonValue | undefined,
+  path: string,
+  key: string,
+  force = false,
+  warn: (message: string) => void = () => {},
+): readonly string[] {
+  if (raw === undefined) {
+    return [];
+  }
+  const names = asNameList(raw);
+  if (names !== undefined) {
+    return names;
+  }
+  if (!force) {
+    throw new NativeStateError(`${key} must be an array of strings`, path);
+  }
+  warn(
+    `claude: ${key} in ${path} must be an array of strings; ignored because --force was given, and the file is left unchanged`,
+  );
+  return [];
 }
 
 /**
@@ -315,6 +338,7 @@ async function readInstructions(fs: ReadFs, path: string) {
 export async function readClaudeNativeState(
   ctx: AdapterContext,
   repoPath: string,
+  warn: (message: string) => void = () => {},
 ): Promise<PartialYokeConfig> {
   const paths = claudePaths(ctx.homeDir, ctx.env, repoPath);
   const repoKey = await claudeRepoKey(ctx.fs, repoPath);
@@ -344,7 +368,13 @@ export async function readClaudeNativeState(
     if (claimed.length === 0) {
       continue;
     }
-    const native = readNameList(valueAt(repoEntry, [key]), paths.userConfig, key);
+    const native = readNameList(
+      valueAt(repoEntry, [key]),
+      paths.userConfig,
+      key,
+      ctx.force ?? false,
+      warn,
+    );
     for (const name of claimed) {
       if (native.includes(name)) {
         owned.add(name);

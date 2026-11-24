@@ -169,13 +169,28 @@ describe("fromClaudeEntry", () => {
     );
   });
 
-  it("rejects an owned key that does not fit the transport", () => {
-    expect(() =>
-      fromClaudeEntry("s", { type: "stdio", command: "x", url: "https://x.test" }, "p"),
-    ).toThrow(NativeStateError);
-    expect(() =>
-      fromClaudeEntry("h", { type: "http", url: "https://x.test", command: "x" }, "p"),
-    ).toThrow(NativeStateError);
+  it("reads an owned key that does not fit the transport as opaque and keeps the entry verbatim", () => {
+    const stdioRaw = { type: "stdio", command: "x", url: "https://x.test" };
+    expect(fromClaudeEntry("s", stdioRaw, "p")).toEqual({
+      kind: "opaque",
+      raw: stdioRaw,
+      reason: '"url" does not fit transport "stdio"',
+    });
+    const httpRaw = { type: "http", url: "https://x.test", command: "x" };
+    expect(fromClaudeEntry("h", httpRaw, "p")).toEqual({
+      kind: "opaque",
+      raw: httpRaw,
+      reason: '"command" does not fit transport "http"',
+    });
+  });
+
+  it("still throws for corrupt owned values on a fitting transport", () => {
+    expect(() => fromClaudeEntry("e", { type: "stdio", command: "x", env: { A: 1 } }, "p")).toThrow(
+      NativeStateError,
+    );
+    expect(() => fromClaudeEntry("a", { type: "stdio", command: "x", args: "nope" }, "p")).toThrow(
+      NativeStateError,
+    );
   });
 });
 
@@ -255,6 +270,21 @@ describe("readClaudeServers and readNameList (fixtures)", () => {
     expect(() => readNameList(entry?.disabledMcpServers, path, "disabledMcpServers")).toThrow(
       NativeStateError,
     );
+  });
+
+  it("treats a malformed disabled list as no names and warns when force is set", async () => {
+    const path = join(sb.home, ".claude.json");
+    const root = await readJsonFixture(sb, "claude/invalid/disabled-list.claude.json", path);
+    const entry = projectEntry(root, sb.repo, path);
+    const warnings: string[] = [];
+    expect(
+      readNameList(entry?.disabledMcpServers, path, "disabledMcpServers", true, (message) =>
+        warnings.push(message),
+      ),
+    ).toEqual([]);
+    expect(warnings).toEqual([
+      `claude: disabledMcpServers in ${path} must be an array of strings; ignored because --force was given, and the file is left unchanged`,
+    ]);
   });
 
   it("reads project entries and name lists from the user config", async () => {
