@@ -8,9 +8,9 @@
  * - agy has no SSE transport. SSE servers are never translated here.
  */
 import { join } from "node:path";
-import { localOverridePath } from "../core/compiler.js";
-import { readJsonIfExists, readTextIfExists, toReadFs } from "../core/fs-safe.js";
+import { readJsonIfExists, toReadFs } from "../core/fs-safe.js";
 import type { ExecResult } from "../core/git.js";
+import { findConditionalTags, hasGeneratedHeader } from "../core/instructions.js";
 import {
   getAtPath,
   isJsonObject,
@@ -27,7 +27,9 @@ import {
   type PartialYokeConfig,
   PartialYokeConfigSchema,
   type ResolvedYokeConfig,
+  type Scope,
   type SyncOptions,
+  stateKey,
 } from "../core/schema.js";
 import {
   type AdapterContext,
@@ -38,12 +40,13 @@ import {
   type HarnessAdapter,
   type HarnessCapabilities,
   type HarnessStatus,
-  instructionSources,
+  type InstructionRemovalInput,
   layerView,
   mergeServerEntries,
   type NativeEntry,
   NativeStateError,
-  planInstructionTarget,
+  planInstructionLink,
+  planInstructionRemoval,
   planJsonKeyPatch,
   readFileSnapshot,
   stubNames,
@@ -401,60 +404,92 @@ export const AGY_CAPABILITIES: HarnessCapabilities = {
   sessionImport: "handoff-file-only",
 };
 
+/** True when the lock records an instructions hash for agy at this scope, so yoke wrote that file earlier. */
+function instructionsRecorded(ctx: AdapterContext, scope: Scope): boolean {
+  return (ctx.lock?.harnesses[stateKey(AGY_NAME, scope)]?.instructionsHash ?? null) !== null;
+}
+
 /**
- * Plans the agy instruction files. The user scope links or compiles `<home>/.gemini/GEMINI.md`. The project scope
- * does the same for `<repo>/GEMINI.md`. The GEMINI.md locations are UNVERIFIED (SPEC §6). Hybrid mode cannot isolate
- * the local override, so it is not applied and the project plan carries a warning.
+ * A removal plan for a native instructions path that yoke may have generated. A user-written file that the lock does
+ * not record is never planned, so it produces no warning and is never touched. A missing path with no lock record is
+ * skipped too.
+ */
+async function planGeneratedRemoval(
+  ctx: AdapterContext,
+  input: InstructionRemovalInput,
+): Promise<FileChangePlan | undefined> {
+  if (input.recordedInLock !== true) {
+    const snap = await readFileSnapshot(ctx.fs, input.path);
+    if (snap.kind === "missing") {
+      return undefined;
+    }
+    if (snap.kind === "file" && !hasGeneratedHeader(snap.content)) {
+      return undefined;
+    }
+  }
+  return planInstructionRemoval(ctx, input);
+}
+
+/** An advisory warning when a canonical AGENTS.md still has legacy yoke:*-only tags (decision 4). */
+async function legacyTagPlan(
+  ctx: AdapterContext,
+  scope: Scope,
+  sourcePath: string,
+): Promise<FileChangePlan | undefined> {
+  const snap = await readFileSnapshot(ctx.fs, sourcePath);
+  if (snap.kind !== "file") {
+    return undefined;
+  }
+  const lines = findConditionalTags(snap.content);
+  if (lines.length === 0) {
+    return undefined;
+  }
+  const plural = lines.length === 1 ? "" : "s";
+  return advisoryPlan(scope, sourcePath, `${sourcePath}: legacy yoke tags`, [
+    `agy: ${sourcePath} has legacy yoke:*-only tags on line${plural} ${lines.join(", ")}; move claude-only text to CLAUDE.md, agy-only text to GEMINI.md`,
+  ]);
+}
+
+/**
+ * Plans the agy instruction files (decisions 2, 6-8). User scope links `<home>/.gemini/GEMINI.md` to the canonical user
+ * AGENTS.md. Project scope writes no file: a yoke-generated `<repo>/GEMINI.md` is removed with a backup, and a
+ * user-written one is never touched. Legacy tags in AGENTS.md get a warning. The GEMINI.md locations are UNVERIFIED
+ * (SPEC §6).
  */
 async function planAgyInstructions(
   ctx: AdapterContext,
-  config: ResolvedYokeConfig,
   opts: SyncOptions,
 ): Promise<FileChangePlan[]> {
   const paths = agyPaths(ctx.homeDir, opts.repoPath);
-  const sources = instructionSources(config, {
-    repoPath: opts.repoPath,
-    userConfigDir: ctx.userConfigDir,
-  });
+  const userSource = join(ctx.userConfigDir, "AGENTS.md");
+  const projectSource = join(opts.repoPath, "AGENTS.md");
   const plans: FileChangePlan[] = [];
+  const add = (plan: FileChangePlan | undefined): void => {
+    if (plan !== undefined) {
+      plans.push(plan);
+    }
+  };
 
   if (opts.scopes.includes("user")) {
-    const plan = await planInstructionTarget(ctx, {
-      target: AGY_NAME,
-      validTargets: config.harnesses,
-      scope: "user",
-      linkPath: paths.userInstructions,
-      sourcePath: sources.user,
-      localPath: undefined,
-      preferSymlink: config.instructions.preferSymlink,
-      warnings: [],
-    });
-    if (plan !== undefined) {
-      plans.push(plan);
-    }
+    add(
+      await planInstructionLink(ctx, {
+        scope: "user",
+        linkPath: paths.userInstructions,
+        sourcePath: userSource,
+      }),
+    );
+    add(await legacyTagPlan(ctx, "user", userSource));
   }
-
   if (opts.scopes.includes("project")) {
-    const localPath = localOverridePath(sources.project);
-    const compiled = config.mode === "compiled";
-    const hasLocal = (await readTextIfExists(ctx.fs, localPath)) !== undefined;
-    const warnings =
-      !compiled && hasLocal
-        ? [`agy: ${localPath} cannot be isolated in hybrid mode; not applied`]
-        : [];
-    const plan = await planInstructionTarget(ctx, {
-      target: AGY_NAME,
-      validTargets: config.harnesses,
-      scope: "project",
-      linkPath: paths.projectInstructions,
-      sourcePath: sources.project,
-      localPath: compiled ? localPath : undefined,
-      preferSymlink: config.instructions.preferSymlink,
-      warnings,
-    });
-    if (plan !== undefined) {
-      plans.push(plan);
-    }
+    add(
+      await planGeneratedRemoval(ctx, {
+        scope: "project",
+        path: paths.projectInstructions,
+        sourcePath: projectSource,
+        recordedInLock: instructionsRecorded(ctx, "project"),
+      }),
+    );
+    add(await legacyTagPlan(ctx, "project", projectSource));
   }
 
   return plans;
@@ -470,7 +505,7 @@ export async function planAgySync(
   opts: SyncOptions,
 ): Promise<FileChangePlan[]> {
   const mcp = await planAgyMcp(ctx, config, opts);
-  const instructions = await planAgyInstructions(ctx, config, opts);
+  const instructions = await planAgyInstructions(ctx, opts);
   return [...mcp, ...instructions];
 }
 

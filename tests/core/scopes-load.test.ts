@@ -119,7 +119,6 @@ describe("loadScopeInputs", () => {
     const resolved = resolveConfig(inputs, { projectDir: REPO_DIR, warn });
     expect(warn).not.toHaveBeenCalled();
     expect(resolved.mode).toBe("hybrid");
-    expect(resolved.instructions.source).toBe(resolve(REPO_DIR, "docs/AGENTS.md"));
     // project switches search to http, then local switches it back to stdio: a transport change
     // replaces the whole entry, so only the local scope remains.
     expect(resolved.mcps.search).toEqual({

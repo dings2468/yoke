@@ -89,6 +89,21 @@ describe("groupExpected", () => {
     ).toThrow("duplicate instructions target in user scope");
   });
 
+  it("keeps a null instructions target as the scope's desired state", () => {
+    const groups = groupExpected([{ kind: "instructions", scope: "project", instructions: null }]);
+    expect(groups.project?.instructions).toBeNull();
+    expect(groups.user).toBeUndefined();
+  });
+
+  it("throws on a second instructions target when the first is null", () => {
+    expect(() =>
+      groupExpected([
+        { kind: "instructions", scope: "user", instructions: null },
+        { kind: "instructions", scope: "user", instructions: fileA },
+      ]),
+    ).toThrow("duplicate instructions target in user scope");
+  });
+
   it("throws on a repeated owned-names list in one scope", () => {
     expect(() =>
       groupExpected([
@@ -115,6 +130,12 @@ describe("stateEntryFor", () => {
   it("writes null instructionsHash and empty mcpHashes when those are not managed", () => {
     const entry = stateEntryFor({});
     expect(entry).toEqual({ mcpHashes: {}, instructionsHash: null });
+  });
+
+  it("writes null instructionsHash for a null desired instructions target", () => {
+    const entry = stateEntryFor({ mcps: {}, instructions: null });
+    expect(entry).toEqual({ mcpHashes: {}, instructionsHash: null });
+    expect(StateEntrySchema.safeParse(entry).success).toBe(true);
   });
 
   it("includes non-empty owned lists with sorted names", () => {
@@ -242,6 +263,49 @@ describe("diffScope", () => {
       desired: { instructions: fileA },
     });
     expect(report.instructions?.status).toBe("in-sync");
+  });
+
+  it("treats a null desired instructions as an absent file, reporting a file yoke removed as added", () => {
+    const report = diffScope({
+      key,
+      native: { mcps: {}, instructions: fileA },
+      lock: undefined,
+      desired: { instructions: null },
+    });
+    expect(report.instructions?.status).toBe("added");
+    expect(report.instructions?.desired).toBeNull();
+    expect(report.instructions?.path).toBe(fileA.path);
+    expect(report.hasDrift).toBe(true);
+  });
+
+  it("reports a file that matches the last sync as stale when desired is null", () => {
+    const report = diffScope({
+      key,
+      native: { mcps: {}, instructions: fileA },
+      lock: lockWith({ instructions: fileA }),
+      desired: { instructions: null },
+    });
+    expect(report.instructions?.status).toBe("stale");
+    expect(report.hasDrift).toBe(false);
+  });
+
+  it("reports no instructions entry when the file is absent on both sides", () => {
+    const withLock = diffScope({
+      key,
+      native: { mcps: {} },
+      lock: lockWith({ instructions: fileA }),
+      desired: { instructions: null },
+    });
+    const withoutLock = diffScope({
+      key,
+      native: { mcps: {} },
+      lock: undefined,
+      desired: { instructions: null },
+    });
+    expect(withLock.instructions).toBeUndefined();
+    expect(withLock.hasDrift).toBe(false);
+    expect(withoutLock.instructions).toBeUndefined();
+    expect(withoutLock.hasDrift).toBe(false);
   });
 
   it("leaves instructions out when desired.instructions is undefined", () => {

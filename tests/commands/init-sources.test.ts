@@ -9,8 +9,8 @@ import {
   readFileSource,
 } from "../../src/commands/init-sources.js";
 import { InitError, UsageError } from "../../src/commands/init-types.js";
-import { GENERATED_HEADER } from "../../src/core/compiler.js";
 import { createNodeFs } from "../../src/core/fs-safe.js";
+import { GENERATED_HEADER } from "../../src/core/instructions.js";
 import type { PartialYokeConfig } from "../../src/core/schema.js";
 
 let dir: string;

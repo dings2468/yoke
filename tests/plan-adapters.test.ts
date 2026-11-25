@@ -4,7 +4,7 @@
  * Every path lives in a temp sandbox (fake home, repo, and XDG config). The real ~/.claude.json and ~/.gemini are never
  * read or written, and exec is a scripted fake that returns nothing.
  */
-import { readdir, readFile, writeFile } from "node:fs/promises";
+import { readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { type AgyPaths, agyPaths, createAgyAdapter } from "../src/adapters/agy.js";
@@ -79,18 +79,11 @@ function agyFiles(sb: Sandbox): AgyPaths {
   return agyPaths(sb.home, sb.repo);
 }
 
-/** Recursively lists the files under `dir` whose text is `text`. */
-async function filesWithText(dir: string, text: string): Promise<string[]> {
-  const found: string[] = [];
-  for (const entry of await readdir(dir, { withFileTypes: true })) {
-    const full = join(dir, entry.name);
-    if (entry.isDirectory()) {
-      found.push(...(await filesWithText(full, text)));
-    } else if ((await readFile(full, "utf8")) === text) {
-      found.push(full);
-    }
-  }
-  return found;
+async function pathExists(path: string): Promise<boolean> {
+  return stat(path).then(
+    () => true,
+    () => false,
+  );
 }
 
 /** The (scope, path, action, summary) rows of a plan, with the sandbox root replaced so two sandboxes compare equal. */
@@ -144,15 +137,13 @@ describe("sync planning with the real adapters", () => {
     expect(result.status).toBe("applied");
 
     const files = agyFiles(sb);
-    const expectedFiles = [
-      userConfig.userConfig,
-      userConfig.projectMcp,
-      userConfig.projectInstructions,
-      files.mcpConfig,
-    ];
+    const expectedFiles = [userConfig.userConfig, userConfig.projectMcp, files.mcpConfig];
     for (const path of expectedFiles) {
       expect(await readFile(path, "utf8")).not.toBe("");
     }
+    // Project instructions are native: AGENTS.md is the only shared file, so no CLAUDE.md or GEMINI.md is created.
+    expect(await pathExists(userConfig.projectInstructions)).toBe(false);
+    expect(await pathExists(join(sb.repo, "GEMINI.md"))).toBe(false);
     // A composable path shared by several plans is merged on disk, so only unshared paths match their planned text.
     for (const change of plan.plans) {
       if (change.action === "noop" || change.after === undefined) continue;
@@ -196,7 +187,26 @@ describe("sync planning with the real adapters", () => {
     expect(await snapshotTree(sb.root)).toEqual(before);
   });
 
-  it("refuses a hand-written repo CLAUDE.md on drift, and with force keeps the original in the backup root", async () => {
+  it("accepts a user-written repo CLAUDE.md that starts with @AGENTS.md: no drift block and no write", async () => {
+    const sb = await newSandbox();
+    await seed(sb);
+    const handWritten = join(sb.repo, "CLAUDE.md");
+    const original = "@AGENTS.md\n\n# Claude notes\n";
+    await writeFile(handWritten, original, "utf8");
+    const plainScopes = scopesForFlags({ global: false, all: false });
+
+    const plan = await buildSyncPlan(requestFor(sb, { scopes: plainScopes }));
+    expect(plan.blocked).toBe(false);
+    expect(plan.gate).toEqual([]);
+    expect(plan.plans.filter((p) => p.path === handWritten).every((p) => p.action === "noop")).toBe(
+      true,
+    );
+
+    await executePlan({ plan, fs: createNodeFs(), now });
+    expect(await readFile(handWritten, "utf8")).toBe(original);
+  });
+
+  it("warns on a user-written repo CLAUDE.md without the @AGENTS.md first line, and writes nothing", async () => {
     const sb = await newSandbox();
     await seed(sb);
     const handWritten = join(sb.repo, "CLAUDE.md");
@@ -204,31 +214,15 @@ describe("sync planning with the real adapters", () => {
     const original = await readFile(handWritten, "utf8");
     const plainScopes = scopesForFlags({ global: false, all: false });
 
-    const plain = await buildSyncPlan(requestFor(sb, { scopes: plainScopes }));
-    expect(plain.blocked).toBe(true);
-    expect(plain.gate).toContainEqual({ kind: "drift", keys: [stateKey("claude", "project")] });
+    const plan = await buildSyncPlan(requestFor(sb, { scopes: plainScopes }));
+    expect(plan.blocked).toBe(false);
+    expect(plan.gate.some((g) => g.kind === "drift")).toBe(false);
+    const rows = plan.plans.filter((p) => p.path === handWritten);
+    expect(rows.every((p) => p.action === "noop")).toBe(true);
+    expect(rows.some((p) => p.warnings.some((w) => w.includes("@AGENTS.md")))).toBe(true);
 
-    const before = await snapshotTree(sb.root);
-    const refused = await executePlan({ plan: plain, fs: createNodeFs(), now });
-    expect(refused.status).toBe("refused");
-    expect(refused.gate.kind).toBe("refused");
-    expect(refused.applied).toEqual([]);
+    await executePlan({ plan, fs: createNodeFs(), now });
     expect(await readFile(handWritten, "utf8")).toBe(original);
-    expect(await snapshotTree(sb.root)).toEqual(before);
-
-    const forced = await buildSyncPlan(requestFor(sb, { scopes: plainScopes, force: true }));
-    expect(forced.blocked).toBe(false);
-    const applied = await executePlan({ plan: forced, fs: createNodeFs(), now });
-    expect(applied.status).toBe("applied");
-    expect(applied.gate.kind).toBe("forced");
-    expect(await readFile(handWritten, "utf8")).not.toBe(original);
-
-    const backupDir = applied.backupDir;
-    if (backupDir === undefined) {
-      throw new Error("forced run did not create a backup directory");
-    }
-    expect(backupDir.startsWith(join(sb.userConfigDir, "backups"))).toBe(true);
-    expect(await filesWithText(backupDir, original)).not.toEqual([]);
   });
 
   it("with --global plans only user-scope paths and never touches the repo", async () => {

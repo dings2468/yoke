@@ -55,7 +55,6 @@ describe("createYokeDefaults", () => {
     const first = createYokeDefaults();
     const second = createYokeDefaults();
     expect(first).not.toBe(second);
-    expect(first.instructions).not.toBe(second.instructions);
     expect(first.harnesses).not.toBe(second.harnesses);
   });
 
@@ -63,7 +62,6 @@ describe("createYokeDefaults", () => {
     expect(createYokeDefaults()).toEqual({
       mode: "compiled",
       harnesses: [],
-      instructions: { source: "AGENTS.md", preferSymlink: true },
       session: { maxTurns: 40, includeGitDiffStat: true },
     });
   });

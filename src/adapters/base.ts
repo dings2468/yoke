@@ -4,20 +4,17 @@
  * Planning functions are pure reads through an injected ReadFs. Writes happen only inside FileChangePlan.apply(ctx),
  * which receives the writable Fs and the backup session. No clock, no process state, no home directory lookups.
  */
-import { resolve } from "node:path";
-import { compileInstructions, decideInstructionStrategy } from "../core/compiler.js";
+import { dirname, resolve } from "node:path";
 import type { ExpectedTarget } from "../core/drift.js";
 import {
-  atomicWrite,
   type BackupSession,
-  ConcurrentModificationError,
   commitJsonPatch,
-  commitTextWrite,
+  commitRemove,
   type FileStat,
   type Fs,
   isNotFound,
   planJsonPatch,
-  planTextWrite,
+  planRemove,
   type ReadFs,
   readJsonIfExists,
   readTextIfExists,
@@ -25,6 +22,7 @@ import {
   safeSymlink,
 } from "../core/fs-safe.js";
 import type { Env, Exec } from "../core/git.js";
+import { hasGeneratedHeader } from "../core/instructions.js";
 import {
   getAtPath,
   isJsonObject,
@@ -65,7 +63,7 @@ export interface HarnessStatus {
   readonly version?: string;
 }
 
-export type FileChangeAction = "create" | "update" | "symlink" | "patch-json" | "noop";
+export type FileChangeAction = "create" | "update" | "symlink" | "patch-json" | "remove" | "noop";
 
 /** Writable context handed to FileChangePlan.apply. Adapters never see the clock or a dry-run flag. */
 export interface ApplyContext {
@@ -127,6 +125,8 @@ export interface HarnessAdapter {
   syncStatic(config: ResolvedYokeConfig, opts: SyncOptions): Promise<FileChangePlan[]>;
   exportLatestSession?(repoPath: string): Promise<YokeSessionIR | null>;
   importAndLaunch?(session: YokeSessionIR, opts: LaunchOptions): Promise<void>;
+  /** Optional read-only advice for doctor about this harness's native files in the repository. Never a problem. */
+  doctorWarnings?(p: { readonly repoPath: string }): Promise<readonly string[]>;
 }
 
 /** A native entry that cannot be read safely: corrupt owned key, or an error for a server yoke defines. */
@@ -274,25 +274,6 @@ export function toDefinition(server: ResolvedMcpServer): McpServerDefinition {
     default:
       return assertNever(server);
   }
-}
-
-/**
- * Absolute paths of the canonical instructions files. `user` resolves against userConfigDir. `project` resolves against
- * repoPath, and the local-scope source overrides the project-scope source. Both default to AGENTS.md.
- */
-export function instructionSources(
-  config: ResolvedYokeConfig,
-  p: { readonly repoPath: string; readonly userConfigDir: string },
-): { readonly user: string; readonly project: string } {
-  const userSource = config.layers.user?.instructions?.source ?? "AGENTS.md";
-  const projectSource =
-    config.layers.local?.instructions?.source ??
-    config.layers.project?.instructions?.source ??
-    "AGENTS.md";
-  return {
-    user: resolve(p.userConfigDir, userSource),
-    project: resolve(p.repoPath, projectSource),
-  };
 }
 
 /**
@@ -534,41 +515,56 @@ export function usesEnvReference(def: McpServerDefinition): boolean {
 
 // #region BA3 instruction plans
 
-export interface InstructionTargetInput {
-  /** Harness name passed to compileInstructions as the target. */
-  readonly target: string;
-  readonly validTargets: readonly string[];
+export interface InstructionLinkInput {
   readonly scope: Scope;
-  /** Native instructions path that yoke links or writes. */
+  /** Native instructions path that yoke links to the canonical source (user scope). */
   readonly linkPath: string;
-  /** Canonical instructions source (absolute). */
+  /** Canonical AGENTS.md (absolute). */
   readonly sourcePath: string;
-  /** Local override source (absolute), or undefined when the adapter does not read one. */
-  readonly localPath: string | undefined;
-  readonly preferSymlink: boolean;
-  readonly warnings: readonly string[];
+  readonly warnings?: readonly string[];
 }
 
-/** Throws ConcurrentModificationError unless `linkPath` is still a symlink whose target text is `target`. */
-async function assertSameLink(fs: Fs, linkPath: string, target: string): Promise<void> {
-  let stat: FileStat;
-  try {
-    stat = await fs.lstat(linkPath);
-  } catch (err: unknown) {
-    if (isNotFound(err)) throw new ConcurrentModificationError(linkPath);
-    throw err;
-  }
-  if (!stat.isSymbolicLink || (await fs.readlink(linkPath)) !== target) {
-    throw new ConcurrentModificationError(linkPath);
-  }
+export interface InstructionRemovalInput {
+  readonly scope: Scope;
+  /** Native instructions path that yoke may have generated earlier. */
+  readonly path: string;
+  /** Canonical AGENTS.md (absolute). A symlink to it counts as yoke-created. */
+  readonly sourcePath: string;
+  /** True when the lock records an instructionsHash for this path. */
+  readonly recordedInLock?: boolean;
+  readonly warnings?: readonly string[];
 }
 
-function planInstructionSymlink(
-  input: InstructionTargetInput,
-  snap: FileSnapshot,
-  reasonText: string,
-): FileChangePlan {
+/** True when `target`, read from a link at `linkPath`, resolves to `sourcePath`. */
+function linksTo(linkPath: string, target: string, sourcePath: string): boolean {
+  return resolve(dirname(linkPath), target) === sourcePath;
+}
+
+/**
+ * Plans a user-scope instructions link to the canonical source. Returns undefined when the source file does not exist.
+ * When symlinks are unsupported, returns a no-op plan with a warning and creates nothing.
+ * Reads only; apply() performs the writes.
+ */
+export async function planInstructionLink(
+  ctx: AdapterContext,
+  input: InstructionLinkInput,
+): Promise<FileChangePlan | undefined> {
+  const warnings = input.warnings ?? [];
+  const source = await readTextIfExists(ctx.fs, input.sourcePath);
+  if (source === undefined) {
+    return undefined;
+  }
+  if (ctx.symlinksSupported === false) {
+    return advisoryPlan(
+      input.scope,
+      input.linkPath,
+      `skip ${input.linkPath}: symlinks unsupported`,
+      [...warnings, `symlinks are unsupported on this platform; skipped ${input.linkPath}`],
+    );
+  }
+
   const rel = relativeLinkTarget(input.linkPath, input.sourcePath);
+  const snap = await readFileSnapshot(ctx.fs, input.linkPath);
   const unchanged = snap.kind === "symlink" && snap.target === rel;
   const before = snap.kind === "file" ? snap.content : undefined;
   const linkBefore = snap.kind === "symlink" ? snap.target : undefined;
@@ -576,11 +572,11 @@ function planInstructionSymlink(
     scope: input.scope,
     path: input.linkPath,
     action: unchanged ? "noop" : "symlink",
-    summary: `symlink ${input.linkPath} -> ${rel}${reasonText}`,
+    summary: `symlink ${input.linkPath} -> ${rel}`,
     before,
     after: undefined,
     link: { before: linkBefore, after: rel },
-    warnings: input.warnings,
+    warnings,
     expected: [
       {
         kind: "instructions",
@@ -588,9 +584,9 @@ function planInstructionSymlink(
         instructions: { kind: "symlink", path: input.linkPath, target: rel },
       },
     ],
-    apply: async (ctx: ApplyContext): Promise<ApplyResult> => {
-      const result = await safeSymlink(ctx.fs, input.linkPath, input.sourcePath, {
-        backup: ctx.backup,
+    apply: async (applyCtx: ApplyContext): Promise<ApplyResult> => {
+      const result = await safeSymlink(applyCtx.fs, input.linkPath, input.sourcePath, {
+        backup: applyCtx.backup,
       });
       if (result.kind === "fallback") {
         return { status: "fallback", backupPath: undefined, detail: result.detail };
@@ -603,95 +599,74 @@ function planInstructionSymlink(
   };
 }
 
-async function planInstructionCompile(
+/**
+ * Plans removal of a native instructions file or link, but only when yoke generated it: the lock records it, a file
+ * starts with the GENERATED header, or a link resolves to the canonical source. Anything else is left alone with a
+ * warning (a no-op plan). Reads only; apply() backs up and unlinks through commitRemove.
+ */
+export async function planInstructionRemoval(
   ctx: AdapterContext,
-  input: InstructionTargetInput,
-  snap: FileSnapshot,
-  content: string,
-  reasonText: string,
+  input: InstructionRemovalInput,
 ): Promise<FileChangePlan> {
-  const expected: readonly ExpectedTarget[] = [
-    {
-      kind: "instructions",
-      scope: input.scope,
-      instructions: { kind: "file", path: input.linkPath, content },
-    },
-  ];
+  const warnings = input.warnings ?? [];
+  const recorded = input.recordedInLock === true;
+  const planned = await planRemove(ctx.fs, input.path);
+  const before = planned.before;
+  const absent: ExpectedTarget = { kind: "instructions", scope: input.scope, instructions: null };
 
-  if (snap.kind === "symlink") {
-    // The link target is never written: the link is replaced by a regular file (SPEC §8.2).
-    const linkTarget = snap.target;
-    return {
-      scope: input.scope,
-      path: input.linkPath,
-      action: "update",
-      summary: `replace symlink ${input.linkPath} with compiled instructions${reasonText}`,
-      before: undefined,
-      after: content,
-      link: { before: linkTarget },
-      warnings: input.warnings,
-      expected,
-      apply: async (applyCtx: ApplyContext): Promise<ApplyResult> => {
-        await assertSameLink(applyCtx.fs, input.linkPath, linkTarget);
-        const backupPath = await applyCtx.backup.backup(input.linkPath, { kind: "link-text" });
-        await atomicWrite(applyCtx.fs, input.linkPath, content, { followSymlinks: false });
-        return { status: "written", backupPath };
-      },
-    };
+  if (before.kind === "missing") {
+    return noopPlan(input, `${input.path}: nothing to remove`, warnings, recorded ? [absent] : []);
   }
 
-  const planned = await planTextWrite(ctx.fs, input.linkPath, content);
-  const action = planned.before === undefined ? "create" : planned.changed ? "update" : "noop";
+  let reason: string | undefined;
+  if (recorded) {
+    reason = "recorded in lock";
+  } else if (before.kind === "file" && hasGeneratedHeader(before.content)) {
+    reason = "generated header";
+  } else if (before.kind === "link" && linksTo(input.path, before.target, input.sourcePath)) {
+    reason = "link to AGENTS.md";
+  }
+  if (reason === undefined) {
+    return noopPlan(
+      input,
+      `leave ${input.path} alone`,
+      [...warnings, `${input.path} is not yoke-generated; left in place`],
+      [],
+    );
+  }
+
   return {
     scope: input.scope,
-    path: input.linkPath,
-    action,
-    summary: `compile ${input.linkPath}${reasonText}`,
-    before: planned.before,
-    after: content,
-    warnings: input.warnings,
-    expected,
+    path: input.path,
+    action: "remove",
+    summary: `remove ${input.path} (${reason})`,
+    before: before.kind === "file" ? before.content : undefined,
+    after: undefined,
+    ...(before.kind === "link" ? { link: { before: before.target, after: undefined } } : {}),
+    warnings,
+    expected: [absent],
     apply: async (applyCtx: ApplyContext): Promise<ApplyResult> => {
-      const result = await commitTextWrite(applyCtx.fs, planned, { backup: applyCtx.backup });
-      return { status: result.written ? "written" : "unchanged", backupPath: result.backupPath };
+      const result = await commitRemove(applyCtx.fs, planned, { backup: applyCtx.backup });
+      return { status: result.removed ? "written" : "unchanged", backupPath: result.backupPath };
     },
   };
 }
 
-/**
- * Plans one native instructions file. Symlink when decideInstructionStrategy allows it, otherwise a compiled copy.
- * Returns undefined when the source file does not exist (D9). Reads only; apply() performs the writes.
- */
-export async function planInstructionTarget(
-  ctx: AdapterContext,
-  input: InstructionTargetInput,
-): Promise<FileChangePlan | undefined> {
-  const source = await readTextIfExists(ctx.fs, input.sourcePath);
-  if (source === undefined) {
-    return undefined;
-  }
-  const local =
-    input.localPath === undefined ? undefined : await readTextIfExists(ctx.fs, input.localPath);
-  const strategy = decideInstructionStrategy({
-    preferSymlink: input.preferSymlink,
-    source,
-    local,
-    symlinksSupported: ctx.symlinksSupported,
-    validTargets: input.validTargets,
-  });
-  const snap = await readFileSnapshot(ctx.fs, input.linkPath);
-
-  if (strategy.kind === "symlink") {
-    return planInstructionSymlink(input, snap, "");
-  }
-  const reasonText = ` [${strategy.reasons.join(", ")}]`;
-  const content = compileInstructions({
-    source,
-    local,
-    target: input.target,
-    validTargets: input.validTargets,
-  });
-  return planInstructionCompile(ctx, input, snap, content, reasonText);
+function noopPlan(
+  input: InstructionRemovalInput,
+  summary: string,
+  warnings: readonly string[],
+  expected: readonly ExpectedTarget[],
+): FileChangePlan {
+  return {
+    scope: input.scope,
+    path: input.path,
+    action: "noop",
+    summary,
+    warnings,
+    expected,
+    apply: () => Promise.resolve({ status: "unchanged", backupPath: undefined }),
+  };
 }
 
 // #endregion BA3 instruction plans

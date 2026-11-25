@@ -10,9 +10,9 @@
 import { join } from "node:path";
 import * as clack from "@clack/prompts";
 import type { FileChangePlan, HarnessAdapter } from "../adapters/base.js";
-import { hasGeneratedHeader } from "../core/compiler.js";
 import { atomicWrite, type Fs, type ReadFs, readTextIfExists, toReadFs } from "../core/fs-safe.js";
 import { gitRepoRoot } from "../core/git.js";
+import { hasGeneratedHeader } from "../core/instructions.js";
 import { executePlan, type SyncPlan } from "../core/plan.js";
 import { createTimedExec, DEFAULT_PROBE_TIMEOUT_MS, probe } from "../core/probe.js";
 import type { Mode, YokeConfig } from "../core/schema.js";

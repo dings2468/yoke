@@ -3,6 +3,5 @@
   "mode": "compiled",
   "harnesses": [],
   "mcps": {},
-  "instructions": { "source": "AGENTS.md", "preferSymlink": true },
   "layers": {}
 }

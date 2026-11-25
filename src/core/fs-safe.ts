@@ -592,4 +592,77 @@ export async function commitTextWrite(
   return { written: true, rebased: false, backupPath };
 }
 
+/** What is at a path, as seen without following links. `missing` means nothing is there. */
+export type RemoveSnapshot =
+  | { readonly kind: "missing" }
+  | { readonly kind: "file"; readonly content: string }
+  | { readonly kind: "link"; readonly target: string };
+
+export interface PlannedRemove {
+  readonly path: string;
+  readonly before: RemoveSnapshot;
+}
+
+export interface CommitRemoveResult {
+  readonly removed: boolean;
+  readonly backupPath: string | undefined;
+}
+
+async function snapshotForRemove(fs: ReadFs, path: string): Promise<RemoveSnapshot> {
+  let st: FileStat;
+  try {
+    st = await fs.lstat(path);
+  } catch (err: unknown) {
+    if (isNotFound(err)) return { kind: "missing" };
+    throw err;
+  }
+  if (st.isSymbolicLink) {
+    return { kind: "link", target: await fs.readlink(path) };
+  }
+  if (st.isFile) {
+    return { kind: "file", content: await fs.readFile(path) };
+  }
+  throw new FsSafeError("refusing to remove a directory or special file", path);
+}
+
+/** Plans the removal of a file or symbolic link. Reads only; nothing is removed. Directories are refused. */
+export async function planRemove(fs: ReadFs, path: string): Promise<PlannedRemove> {
+  return { path, before: await snapshotForRemove(fs, path) };
+}
+
+function sameRemoveSnapshot(a: RemoveSnapshot, b: RemoveSnapshot): boolean {
+  if (a.kind !== b.kind) return false;
+  if (a.kind === "file" && b.kind === "file") return a.content === b.content;
+  if (a.kind === "link" && b.kind === "link") return a.target === b.target;
+  return true;
+}
+
+/**
+ * Removes a planned file or link. The path is re-inspected first; if it changed since planning, this throws
+ * ConcurrentModificationError and nothing is touched. The content (or the link itself) is backed up before unlink.
+ * A path that is already missing at commit time is a no-op when the plan also recorded it as missing.
+ */
+export async function commitRemove(
+  fs: Fs,
+  plan: PlannedRemove,
+  opts: { readonly backup: BackupSession },
+): Promise<CommitRemoveResult> {
+  const current = await snapshotForRemove(fs, plan.path);
+  if (!sameRemoveSnapshot(current, plan.before)) {
+    throw new ConcurrentModificationError(plan.path);
+  }
+  if (current.kind === "missing") {
+    return { removed: false, backupPath: undefined };
+  }
+
+  const backupPath = await opts.backup.backup(plan.path, {
+    kind: current.kind === "link" ? "link" : "content",
+  });
+  if (backupPath === undefined) {
+    throw new ConcurrentModificationError(plan.path);
+  }
+  await fs.unlink(plan.path);
+  return { removed: true, backupPath };
+}
+
 // #endregion

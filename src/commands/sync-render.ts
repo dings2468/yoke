@@ -155,6 +155,8 @@ function changeMarker(action: FileChangeAction): string {
       return "* patch-json";
     case "symlink":
       return "> symlink";
+    case "remove":
+      return "- remove";
     case "noop":
       return "noop";
   }
@@ -213,7 +215,7 @@ export function renderPlan(
     lines.push(
       `${changeMarker(plan.action)} ${path} (${change.harness}, ${plan.scope}): ${plan.summary}`,
     );
-    if (plan.action === "symlink") {
+    if (plan.action === "symlink" || (plan.action === "remove" && plan.link !== undefined)) {
       const before = plan.link?.before ?? "(none)";
       const after = plan.link?.after ?? "(none)";
       lines.push(`    link: ${before} -> ${after}`);

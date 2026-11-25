@@ -17,7 +17,7 @@ Read `SPEC.md` before making architectural changes. `SPEC.md` is the source of t
 1. **Strict Adapter Isolation:** Harness-specific paths, JSON keys (Claude `type: "http"` + `url` vs. agy `url` only, where `serverUrl` is accepted as a legacy alias on read), and session parsers belong **exclusively** inside `src/adapters/<harness>.ts`. Never branch on harness names (`if (name === "claude")`) inside `src/core/` or `src/commands/`.
 2. **Capability-Driven Core:** Every adapter must implement `HarnessAdapter` and declare `HarnessCapabilities` (`src/adapters/base.ts`). Commands must check capabilities before invoking optional methods (`exportLatestSession`, `importAndLaunch`) and degrade gracefully. Note: agy does not support legacy HTTP+SSE, so `transport: sse` servers are skipped for agy with a warning. agy also has no v0.1 project-level MCP config, so project and local MCP servers are skipped for agy with a warning and never written to the global file.
 3. **3-Tier Scope Precedence:** Always resolve configuration in strict order: `local` > `project` > `user`. Respect `enabled: false` to disable inherited `user`-level MCP servers.
-4. **Canonical Validation:** Validate all external inputs (`yoke.yaml`, `yoke.local.yaml`, `.yoke/state.json`, `YokeSessionIR`) through Zod schemas in `src/core/schema.ts`.
+4. **Canonical Validation:** Validate all external inputs (`yoke.yaml`, `yoke.local.yaml`, the lock files (`.yoke/yoke.lock`, `<userConfigDir>/yoke.lock`), `YokeSessionIR`) through Zod schemas in `src/core/schema.ts`.
 
 ## Non-Negotiable Safety Invariants
 Violating any of these is a blocking bug:
@@ -25,7 +25,7 @@ Violating any of these is a blocking bug:
 2. **Automatic Backups:** Always back up before `yoke` overwrites or patches any file, including yoke-managed files. Copy the original to `<userConfigDir>/backups/<timestamp>/` as SPEC §8.2 describes.
 3. **Dry-Run Parity:** `syncStatic()` must return `FileChangePlan[]` without performing disk writes. `--dry-run` must execute the exact same planning pipeline and simply skip calling `apply()`.
 4. **No Secret Leakage:** Never resolve or expand `${ENV_VAR}` values into plaintext in generated project files. Preserve variable references in the target harness's native syntax.
-5. **No Silent Overwrites:** Before overwriting a native harness file, diff against `.yoke/state.json` via `src/core/drift.ts`. If native drift is detected, prompt the user (or fail in non-interactive mode unless `--force` is passed).
+5. **No Silent Overwrites:** Before overwriting a native harness file, diff against the lock files (`.yoke/yoke.lock`, `<userConfigDir>/yoke.lock`) via the drift gate in `src/core/plan.ts` (`buildSyncPlan`/`executePlan`; hashing in `src/core/drift.ts`). If native drift is detected, prompt the user (or fail in non-interactive mode unless `--force` is passed).
 6. **Lossy-but-Clean Session IR:** Never copy provider-specific thinking/thought signatures or raw multi-hundred-line file dumps into `YokeSessionIR`. Flatten tool calls into compact `actions[]` summaries.
 
 ## Coding & Testing Standards
@@ -34,6 +34,6 @@ Violating any of these is a blocking bug:
 - **Test Coverage Priorities:**
   - Zero-clobber patching of `~/.claude.json` (unrelated keys must survive byte-for-byte in structure).
   - HTTP/SSE schema translation (`claude` <-> `agy`) and reverse-parsing (`readNativeState`).
-  - 3-way drift detection (`yoke.yaml` vs. `.yoke/state.json` vs. native file).
-  - Conditional block compilation (`<!-- yoke:claude-only -->` / `<!-- yoke:agy-only -->`) vs. symlink fallback.
+  - 3-way drift detection (`yoke.yaml` vs. `.yoke/yoke.lock` vs. native file).
+  - Instruction handling: `AGENTS.md` is the shared source; a `CLAUDE.md` must start with `@AGENTS.md`; leftover `yoke:*-only` tags produce warnings.
 

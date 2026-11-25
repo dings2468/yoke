@@ -388,6 +388,28 @@ describe("runDoctor", () => {
     expect(await snapshotTree(root)).toEqual(before);
   });
 
+  it("warns with line numbers when AGENTS.md still has yoke:*-only tags", async () => {
+    await writeYoke(["alpha"]);
+    await writeFile(
+      join(repo, "AGENTS.md"),
+      "# Rules\n<!-- yoke:claude-only -->\nclaude text\n<!-- /yoke:claude-only -->\n<!-- yoke:agy-only -->\n",
+      "utf8",
+    );
+    const report = await runDoctor(makeDeps({ factories: [fakeFactory({ name: "alpha" })] }));
+    const warn = find(report.checks, "config", "AGENTS.md");
+    expect(warn?.status).toBe("warn");
+    expect(warn?.message).toContain("lines 2, 4, 5");
+    expect(warn?.message).toContain("sent to every harness unchanged");
+    expect(doctorExitCode(report)).toBe(EXIT_OK);
+  });
+
+  it("does not warn about AGENTS.md when it has no legacy tags", async () => {
+    await writeYoke(["alpha"]);
+    await writeFile(join(repo, "AGENTS.md"), "# Rules\n<!-- a plain comment -->\n", "utf8");
+    const report = await runDoctor(makeDeps({ factories: [fakeFactory({ name: "alpha" })] }));
+    expect(find(report.checks, "config", "AGENTS.md")).toBeUndefined();
+  });
+
   it("formats a report without colour in plain lines", async () => {
     await writeYoke(["alpha"]);
     const report = await runDoctor(makeDeps({ factories: [fakeFactory({ name: "alpha" })] }));

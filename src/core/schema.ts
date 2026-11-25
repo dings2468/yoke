@@ -116,13 +116,6 @@ export function isMcpDisabledStub(entry: McpServerEntry): entry is McpDisabledSt
 // #endregion S1 mcp
 
 // #region S4 config
-export const InstructionsConfigSchema = z.strictObject({
-  /** Path to the canonical instructions file, relative to the directory of the yaml file that declares it. */
-  source: z.string().min(1).optional(),
-  preferSymlink: z.boolean().optional(),
-});
-export type InstructionsConfig = z.infer<typeof InstructionsConfigSchema>;
-
 export const SessionConfigSchema = z.strictObject({
   maxTurns: z.number().int().positive().optional(),
   includeGitDiffStat: z.boolean().optional(),
@@ -139,7 +132,6 @@ export const YokeConfigSchema = z.strictObject({
   mode: ModeSchema.optional(),
   harnesses: HarnessListSchema.optional(),
   mcps: McpServersSchema.optional(),
-  instructions: InstructionsConfigSchema.optional(),
   session: SessionConfigSchema.optional(),
 });
 export type YokeConfig = z.infer<typeof YokeConfigSchema>;
@@ -167,7 +159,6 @@ export const ResolvedYokeConfigSchema = z.strictObject({
   harnesses: z.array(HarnessNameSchema),
   /** Effective view: local > project > user. */
   mcps: z.record(McpServerNameSchema, ResolvedMcpServerSchema),
-  instructions: z.strictObject({ source: z.string().min(1), preferSymlink: z.boolean() }),
   session: z.strictObject({
     maxTurns: z.number().int().positive(),
     includeGitDiffStat: z.boolean(),
@@ -181,17 +172,13 @@ export const ResolvedYokeConfigSchema = z.strictObject({
 });
 export type ResolvedYokeConfig = z.infer<typeof ResolvedYokeConfigSchema>;
 
-export type YokeDefaults = Pick<
-  ResolvedYokeConfig,
-  "mode" | "harnesses" | "instructions" | "session"
->;
+export type YokeDefaults = Pick<ResolvedYokeConfig, "mode" | "harnesses" | "session">;
 
 /** Fresh object on each call, so no shared mutable defaults. Values: SPEC §3 (mode) and the SPEC §4.1 example. */
 export function createYokeDefaults(): YokeDefaults {
   return {
     mode: "compiled",
     harnesses: [],
-    instructions: { source: "AGENTS.md", preferSymlink: true },
     session: { maxTurns: 40, includeGitDiffStat: true },
   };
 }

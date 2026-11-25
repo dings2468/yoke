@@ -24,10 +24,6 @@ mcps:
   github:
     enabled: false
 
-instructions:
-  source: AGENTS.md
-  preferSymlink: true # Symlink when no conditional blocks or local overrides exist
-
 session:
   maxTurns: 40
   includeGitDiffStat: true

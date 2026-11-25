@@ -4,6 +4,7 @@
  * Doctor receives a ReadFs and never builds an apply context, so it cannot write. Adapters come from injected
  * factories and are used only through their methods and capabilities. Planning is injected as `planner`.
  */
+import { join } from "node:path";
 import type { FileChangePlan, HarnessAdapter } from "../adapters/base.js";
 import type { AdapterFactory } from "../adapters/registry.js";
 import {
@@ -14,6 +15,7 @@ import {
 } from "../core/drift.js";
 import { isNotFound, type ReadFs, readTextIfExists, toReadFs } from "../core/fs-safe.js";
 import { type Env, type Exec, gitRepoRoot } from "../core/git.js";
+import { findConditionalTags } from "../core/instructions.js";
 import { lockPaths, readLock } from "../core/plan.js";
 import { createTimedExec, DEFAULT_PROBE_TIMEOUT_MS, probe, type TimedExec } from "../core/probe.js";
 import type {
@@ -84,6 +86,7 @@ export async function runDoctor(deps: DoctorDeps): Promise<DoctorReport> {
   if (repoRoot !== undefined) {
     config = await checkConfig(deps, repoRoot, checks);
     lock = await checkLock(deps, repoRoot, checks);
+    await checkLegacyTags(deps, repoRoot, checks);
   }
 
   const built: { readonly adapter: HarnessAdapter; readonly timed: TimedExec }[] = [];
@@ -108,6 +111,10 @@ export async function runDoctor(deps: DoctorDeps): Promise<DoctorReport> {
         message: `could not be constructed: ${errorMessage(err)}`,
       });
     }
+  }
+
+  if (repoRoot !== undefined) {
+    await checkAdapterWarnings(built, repoRoot, checks);
   }
 
   const listed = config?.harnesses ?? [];
@@ -224,6 +231,70 @@ async function checkConfig(
       message: errorMessage(err),
     });
     return undefined;
+  }
+}
+
+async function readInstructionFile(
+  deps: DoctorDeps,
+  path: string,
+  subject: string,
+  checks: DoctorCheck[],
+): Promise<string | undefined> {
+  try {
+    return await readTextIfExists(deps.fs, path);
+  } catch (err: unknown) {
+    checks.push({
+      kind: "config",
+      subject,
+      status: "unknown",
+      message: `could not read: ${errorMessage(err)}`,
+    });
+    return undefined;
+  }
+}
+
+/** Warning only, never a problem: leftover `yoke:*-only` tags in AGENTS.md are sent to every harness unchanged. */
+async function checkLegacyTags(
+  deps: DoctorDeps,
+  repoRoot: string,
+  checks: DoctorCheck[],
+): Promise<void> {
+  const agents = await readInstructionFile(deps, join(repoRoot, "AGENTS.md"), "AGENTS.md", checks);
+  if (agents === undefined) return;
+  const lines = findConditionalTags(agents);
+  if (lines.length > 0) {
+    const noun = lines.length === 1 ? "line" : "lines";
+    checks.push({
+      kind: "config",
+      subject: "AGENTS.md",
+      status: "warn",
+      message: `${noun} ${lines.join(", ")}: yoke:*-only tags are no longer supported and are sent to every harness unchanged`,
+      hint: "move each harness-specific section into that harness's own instruction file, then delete the tags",
+    });
+  }
+}
+
+/** Asks each adapter that defines `doctorWarnings` for its advice. Warnings never change the exit code. */
+async function checkAdapterWarnings(
+  built: readonly { readonly adapter: HarnessAdapter }[],
+  repoRoot: string,
+  checks: DoctorCheck[],
+): Promise<void> {
+  for (const { adapter } of built) {
+    if (adapter.doctorWarnings === undefined) continue;
+    try {
+      const warnings = await adapter.doctorWarnings({ repoPath: repoRoot });
+      for (const message of warnings) {
+        checks.push({ kind: "config", subject: adapter.name, status: "warn", message });
+      }
+    } catch (err: unknown) {
+      checks.push({
+        kind: "config",
+        subject: adapter.name,
+        status: "unknown",
+        message: `could not check instruction files: ${errorMessage(err)}`,
+      });
+    }
   }
 }
 
