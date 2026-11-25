@@ -275,25 +275,6 @@ export function toDefinition(server: ResolvedMcpServer): McpServerDefinition {
 }
 
 /**
- * Absolute paths of the canonical instructions files. `user` resolves against userConfigDir. `project` resolves against
- * repoPath, and the local-scope source overrides the project-scope source. Both default to AGENTS.md.
- */
-export function instructionSources(
-  config: ResolvedYokeConfig,
-  p: { readonly repoPath: string; readonly userConfigDir: string },
-): { readonly user: string; readonly project: string } {
-  const userSource = config.layers.user?.instructions?.source ?? "AGENTS.md";
-  const projectSource =
-    config.layers.local?.instructions?.source ??
-    config.layers.project?.instructions?.source ??
-    "AGENTS.md";
-  return {
-    user: resolve(p.userConfigDir, userSource),
-    project: resolve(p.repoPath, projectSource),
-  };
-}
-
-/**
  * Reads a path without following links: lstat, then readlink for a symlink, or readFile for a file.
  * A missing path yields "missing". A directory throws NativeStateError.
  */

@@ -5,7 +5,6 @@ import {
   advisoryPlan,
   definedNames,
   disabledNames,
-  instructionSources,
   layerView,
   NativeStateError,
   readFileSnapshot,
@@ -14,8 +13,7 @@ import {
   toNativeInstructions,
 } from "../../src/adapters/base.js";
 import { createNodeFs } from "../../src/core/fs-safe.js";
-import type { ResolvedMcpServer, ResolvedYokeConfig, Scope } from "../../src/core/schema.js";
-import { parseScopeConfig, resolveConfig, type ScopeInputs } from "../../src/core/scopes.js";
+import type { ResolvedMcpServer } from "../../src/core/schema.js";
 import {
   cleanupSandbox,
   loadFixtureConfig,
@@ -33,29 +31,6 @@ function must(
     throw new Error(`missing server in test fixture: ${name}`);
   }
   return server;
-}
-
-/** Resolves inline instruction sources (one per scope) without touching disk. */
-function resolveWithSources(
-  sb: Sandbox,
-  sources: Partial<Record<Scope, string>>,
-): ResolvedYokeConfig {
-  const inputs: ScopeInputs = {};
-  for (const scope of ["user", "project", "local"] as const) {
-    const source = sources[scope];
-    if (source === undefined) {
-      continue;
-    }
-    inputs[scope] = {
-      config: parseScopeConfig(
-        `version: 1\ninstructions:\n  source: ${source}\n`,
-        scope,
-        `${scope}.yaml`,
-      ),
-      baseDir: scope === "user" ? sb.userConfigDir : sb.repo,
-    };
-  }
-  return resolveConfig(inputs, { projectDir: sb.repo, warn: () => {} });
 }
 
 describe("contract helpers", () => {
@@ -162,39 +137,6 @@ describe("contract helpers", () => {
         command: "q",
         enabled: false,
       });
-    });
-  });
-
-  describe("instructionSources", () => {
-    it("defaults both sources to AGENTS.md", () => {
-      const config = resolveWithSources(sb, {});
-      expect(
-        instructionSources(config, { repoPath: sb.repo, userConfigDir: sb.userConfigDir }),
-      ).toEqual({
-        user: join(sb.userConfigDir, "AGENTS.md"),
-        project: join(sb.repo, "AGENTS.md"),
-      });
-    });
-
-    it("uses the declared sources, and the local source overrides the project source", () => {
-      const config = resolveWithSources(sb, {
-        user: "rules/user.md",
-        project: "docs/project.md",
-        local: "docs/local.md",
-      });
-      expect(
-        instructionSources(config, { repoPath: sb.repo, userConfigDir: sb.userConfigDir }),
-      ).toEqual({
-        user: join(sb.userConfigDir, "rules/user.md"),
-        project: join(sb.repo, "docs/local.md"),
-      });
-    });
-
-    it("uses the project source when no local source is declared", () => {
-      const config = resolveWithSources(sb, { project: "docs/project.md" });
-      expect(
-        instructionSources(config, { repoPath: sb.repo, userConfigDir: sb.userConfigDir }).project,
-      ).toBe(join(sb.repo, "docs/project.md"));
     });
   });
 
