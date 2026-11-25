@@ -35,5 +35,5 @@ Violating any of these is a blocking bug:
   - Zero-clobber patching of `~/.claude.json` (unrelated keys must survive byte-for-byte in structure).
   - HTTP/SSE schema translation (`claude` <-> `agy`) and reverse-parsing (`readNativeState`).
   - 3-way drift detection (`yoke.yaml` vs. `.yoke/yoke.lock` vs. native file).
-  - Conditional block compilation (`<!-- yoke:claude-only -->` / `<!-- yoke:agy-only -->`) vs. symlink fallback.
+  - Instruction handling: `AGENTS.md` is the shared source; a `CLAUDE.md` must start with `@AGENTS.md`; leftover `yoke:*-only` tags produce warnings.
 
