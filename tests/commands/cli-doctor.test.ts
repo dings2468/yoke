@@ -193,6 +193,6 @@ describe("yoke command-line usage", () => {
     const captured = capture();
     const code = await runCli(["node", "yoke", "--version"], makeDeps({ captured }));
     expect(code).toBe(EXIT_OK);
-    expect(captured.out()).toBe("0.0.0\n");
+    expect(captured.out()).toBe("0.1.0\n");
   });
 });

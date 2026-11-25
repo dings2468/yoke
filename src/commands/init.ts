@@ -1,8 +1,8 @@
 /**
  * src/commands/init.ts — `yoke init`: choose what to import from native harness files, then write yoke.yaml,
  * yoke.local.yaml, AGENTS.md, and .gitignore lines through the plan pipeline (executePlan). It also writes the
- * user-scope yoke.yaml (merged, never clobbered, backed up first). Init never syncs and never writes .yoke/yoke.lock
- * or .yoke/state.json.
+ * user-scope yoke.yaml (merged, never clobbered, backed up first). Init never syncs and never writes the lock files
+ * (.yoke/yoke.lock, <userConfigDir>/yoke.lock).
  *
  * Adapters are reached only through the injected factories and their capabilities. Prompts come in through
  * InitDeps; the real terminal wrapper (createClackPrompts) is the only place @clack/prompts is used.

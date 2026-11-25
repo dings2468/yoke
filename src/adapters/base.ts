@@ -109,7 +109,7 @@ export interface AdapterContext {
   readonly fs: ReadFs;
   readonly exec: Exec;
   readonly env: Env;
-  /** Parsed `.yoke/state.json`, validated by the command. */
+  /** Parsed `.yoke/yoke.lock`, validated by the command. */
   readonly lock?: YokeStateLock;
   /** `--force`: proceed past native drift and malformed-but-recoverable state. */
   readonly force?: boolean;

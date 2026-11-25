@@ -17,7 +17,7 @@ import type { Env, Exec } from "./core/git.js";
 import { buildSyncPlan } from "./core/plan.js";
 import { userConfigDir } from "./core/scopes.js";
 
-export const VERSION = "0.0.0";
+export const VERSION = "0.1.0";
 
 /** Output sinks. The runner never touches the process streams itself. */
 export interface CliIo {

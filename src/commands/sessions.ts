@@ -1,4 +1,4 @@
 /**
- * src/commands/sessions.ts — stub. Implemented in a later v0.1 task (see SPEC.md §9).
+ * src/commands/sessions.ts — stub. Implemented in v0.2 (see SPEC.md §9).
  */
 export {};

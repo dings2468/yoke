@@ -161,7 +161,7 @@ export function makeApplyContext(sb: Sandbox): ApplyContext {
   };
 }
 
-/** A parsed `.yoke/state.json` lock with a fixed `lastSyncedAt`. Entries are keyed by `<harness>:<scope>`. */
+/** A parsed `.yoke/yoke.lock` with a fixed `lastSyncedAt`. Entries are keyed by `<harness>:<scope>`. */
 export function lockFrom(entries: Readonly<Record<string, StateEntry>>): YokeStateLock {
   return YokeStateLockSchema.parse({
     version: 1,
