@@ -21,7 +21,7 @@ Read `SPEC.md` before making architectural changes. `SPEC.md` is the source of t
 
 ## Non-Negotiable Safety Invariants
 Violating any of these is a blocking bug:
-1. **Zero-Clobber JSON Patching:** Never overwrite `~/.claude.json` or any shared harness config wholesale. Use `src/core/fs-safe.ts` to read, parse, patch *only* the target key (e.g., `mcpServers`), and write atomically (`.tmp` + `rename`).
+1. **Zero-Clobber JSON Patching:** Never overwrite `~/.claude.json` or any shared harness config wholesale. Use `src/core/fs-safe.ts` to read, parse, patch *only* the target key (e.g., `mcpServers`), and write atomically (exclusive `<name>.<random>.yoke.tmp` in the target directory + `rename`, SPEC §8.1).
 2. **Automatic Backups:** Always back up before `yoke` overwrites or patches any file, including yoke-managed files. Copy the original to `<userConfigDir>/backups/<timestamp>/` as SPEC §8.2 describes.
 3. **Dry-Run Parity:** `syncStatic()` must return `FileChangePlan[]` without performing disk writes. `--dry-run` must execute the exact same planning pipeline and simply skip calling `apply()`.
 4. **No Secret Leakage:** Never resolve or expand `${ENV_VAR}` values into plaintext in generated project files. Preserve variable references in the target harness's native syntax.
