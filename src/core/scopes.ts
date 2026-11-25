@@ -17,7 +17,7 @@
  *   is replaced whole, never merged.
  * - Full definitions only: every non-stub entry must be a complete definition with a `transport`. Partial overrides
  *   of a lower-scope server (for example, only `env` in yoke.local.yaml) are not valid.
- * - Whether `null` should later remove an inherited field is an open item (decision-5); YAML `null` is rejected in v0.1.
+ * - Whether `null` should later remove an inherited field is an open item (decision-0005); YAML `null` is rejected in v0.1.
  */
 import { dirname, isAbsolute, join } from "node:path";
 import { parse as parseYaml } from "yaml";

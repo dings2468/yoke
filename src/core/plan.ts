@@ -482,7 +482,7 @@ export function computeLockUpdate(input: {
 }
 
 /**
- * For each fallen instructions target, the entry's instructionsHash is restored from the previous lock entry (decision-16)
+ * For each fallen instructions target, the entry's instructionsHash is restored from the previous lock entry (decision-0016)
  * (null when there is none). Other target kinds and keys without an entry in the update are left alone.
  */
 export function carryOverFallbacks(

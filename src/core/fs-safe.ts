@@ -8,7 +8,7 @@
  * Atomic writes: the temp file is `<name>.<random>.yoke.tmp` in the target's directory. It is created
  * exclusively (`wx`) and then renamed into place, so a crash never leaves a partially written target.
  *
- * Backup layout (decision-18): backups go to `<userConfigDir>/backups/<timestamp>/`, where the timestamp is
+ * Backup layout (decision-0018): backups go to `<userConfigDir>/backups/<timestamp>/`, where the timestamp is
  * ISO-8601 with `:` and `.` replaced by `-`. The original absolute path is mirrored under that directory, and a
  * `-N` suffix avoids collisions between sessions. The directory is mode 0700. yoke never writes text to an
  * instruction path; it only creates, replaces, or removes links, and removes files it generated earlier. A

@@ -5,7 +5,7 @@
  * Hash format: lowercase hex sha256 with no `sha256:` prefix (64 characters). The hashed input is the sorted-key
  * canonical JSON of the value: keys sorted recursively, array order kept, no whitespace, `undefined`-valued keys
  * omitted, UTF-8. Symlinked instructions are hashed as `{kind:"symlink",target}` and files as `{kind:"file",content}`
- * (decision-12), so editing AGENTS.md behind an instruction-file symlink is not drift.
+ * (decision-0012), so editing AGENTS.md behind an instruction-file symlink is not drift.
  *
  * Three-way drift check (run before yoke overwrites native files):
  * 1. Reverse-read: the source adapter's readNativeState parses the harness's current native MCPs and instructions
