@@ -1,5 +1,5 @@
 /**
- * src/commands/sync-prompt.ts — the interactive drift prompt for `yoke sync` (SPEC.md §5, v0.1).
+ * src/commands/sync-prompt.ts — the interactive drift prompt for `yoke sync` (v0.1: Overwrite or Abort).
  * `createDriftConfirm` is pure over an injected DriftPromptApi and is tested with fakes. The only @clack/prompts use in
  * this file is `createClackDriftPrompt`, the real terminal wrapper.
  */

@@ -120,7 +120,7 @@ async function installedHarnesses(
   return names;
 }
 
-/** Chooses the import selection from --import-from tokens, or from the interactive picker (DI3, DI5). */
+/** Chooses the import selection from --import-from tokens, or from the interactive picker. */
 async function chooseSelection(
   opts: InitOptions,
   deps: InitDeps,
@@ -194,7 +194,7 @@ async function generatedPaths(input: {
   return { mode: config.mode, paths };
 }
 
-/** Read-only planning for one text write (DI9). Identical content is a noop; a difference follows ifExists. */
+/** Read-only planning for one text write. Identical content is a noop; a difference follows ifExists. */
 async function planText(
   fs: ReadFs,
   repoPath: string,
@@ -231,7 +231,7 @@ async function planText(
   };
 }
 
-/** Read-only planning for ensure-lines (DI9): appends only the lines that are not already present. */
+/** Read-only planning for ensure-lines: appends only the lines that are not already present. */
 async function planLines(
   fs: ReadFs,
   repoPath: string,
@@ -399,7 +399,7 @@ async function initFlow(opts: InitOptions, deps: InitDeps): Promise<number> {
     gitignore: ignoreLines,
   });
 
-  // User-scope file (U4, U5). mergeUserConfig validates an existing file first, so an invalid one fails before any write.
+  // User-scope file. mergeUserConfig validates an existing file first, so an invalid one fails before any write.
   const userPath = join(userDir, "yoke.yaml");
   let userAdded = false;
   if (draft.user !== undefined) {

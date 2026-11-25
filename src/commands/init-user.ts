@@ -1,5 +1,5 @@
 /**
- * src/commands/init-user.ts — merges the user-scope draft into `<userConfigDir>/yoke.yaml` without clobbering it (U4).
+ * src/commands/init-user.ts — merges the user-scope draft into `<userConfigDir>/yoke.yaml` without clobbering it.
  * Pure: takes the existing file text (or none) and returns the text to write, plus what changed. Nothing is written here.
  */
 import { parseDocument } from "yaml";

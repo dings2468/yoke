@@ -462,7 +462,7 @@ describe("detectClaude", () => {
 });
 
 describe("createClaudeAdapter", () => {
-  it("declares the D11 capabilities and no session methods", () => {
+  it("declares the v0.1 capabilities and no session methods", () => {
     const adapter = createClaudeAdapter(makeAdapterContext(sb));
     expect(adapter.name).toBe("claude");
     expect(adapter.capabilities).toEqual(CLAUDE_CAPABILITIES);

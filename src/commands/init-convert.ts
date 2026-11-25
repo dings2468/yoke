@@ -25,7 +25,7 @@ export type SecretPolicy = "local" | "ref";
 export interface InitDraft {
   readonly project: YokeConfig;
   readonly local: YokeConfig | undefined;
-  /** Native user-tier servers not already in project or local, for the user-scope file (U2). */
+  /** Native user-tier servers not already in project or local, for the user-scope file. */
   readonly user:
     | {
         readonly mcps: Readonly<Record<string, McpServerDefinition>>;
@@ -46,7 +46,7 @@ interface Claim {
   readonly def: McpServerDefinition;
 }
 
-/** Merges one tier across harnesses. Identical definitions collapse; different ones fail (DI8). */
+/** Merges one tier across harnesses. Identical definitions collapse; different ones fail. */
 function mergeTier(
   tier: "project" | "local" | "user",
   harnesses: readonly HarnessImport[],
@@ -70,7 +70,7 @@ function mergeTier(
 }
 
 /**
- * Builds the drafts for yoke.yaml, yoke.local.yaml, and the user-scope draft (DI2, DI7, DI8, DI10, U2, U3).
+ * Builds the drafts for yoke.yaml, yoke.local.yaml, and the user-scope draft.
  * Literal secrets in the project tier become `${VAR}` references; `local` keeps their full originals in the local
  * draft. User-tier servers keep literal values under `local` and become references under `ref`.
  */
@@ -152,7 +152,7 @@ export function buildInitDraft(input: {
 }
 
 /**
- * The user-scope draft (U2, U3). Names already in the project or local draft are left out, with a note. Under
+ * The user-scope draft. Names already in the project or local draft are left out, with a note. Under
  * `ref`, literal secrets become references; the findings are returned so the caller can list them.
  */
 function buildUserDraft(input: {
@@ -207,7 +207,7 @@ export function renderYokeYaml(config: YokeConfig): string {
 }
 
 /**
- * Lines for `.gitignore` (DI9). In compiled mode, generated project paths inside the repo are added as
+ * Lines for `.gitignore`. In compiled mode, generated project paths inside the repo are added as
  * `/`-anchored entries; `AGENTS.md` and `yoke.yaml` are never ignored. Sorted and unique.
  */
 export function gitignoreLines(input: {
@@ -236,7 +236,7 @@ export function gitignoreLines(input: {
 }
 
 /**
- * Write intents for the draft (DI9). Only `<repo>/yoke.yaml`, `<repo>/yoke.local.yaml`, `<repo>/AGENTS.md` and
+ * Write intents for the draft. Only `<repo>/yoke.yaml`, `<repo>/yoke.local.yaml`, `<repo>/AGENTS.md` and
  * `<repo>/.gitignore` can appear. `gitignore: undefined` means `--no-gitignore`.
  */
 export function draftToIntents(

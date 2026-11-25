@@ -1,5 +1,5 @@
 /**
- * src/commands/sync.ts — `yoke sync` (SPEC.md §5 and §7). One planning path: buildSyncPlan runs once, the plan is rendered,
+ * src/commands/sync.ts — `yoke sync` (see README.md, sections Commands and Drift). One planning path: buildSyncPlan runs once, the plan is rendered,
  * and a real run hands the same plan to executePlan. A dry run stops after rendering. This module never writes files itself.
  *
  * Adapters are reached only through the injected factories. The drift prompt comes in through SyncDeps; the terminal

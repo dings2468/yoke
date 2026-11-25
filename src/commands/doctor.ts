@@ -1,5 +1,5 @@
 /**
- * src/commands/doctor.ts: read-only doctor checks (SPEC §9).
+ * src/commands/doctor.ts: read-only doctor checks.
  *
  * Doctor receives a ReadFs and never builds an apply context, so it cannot write. Adapters come from injected
  * factories and are used only through their methods and capabilities. Planning is injected as `planner`.

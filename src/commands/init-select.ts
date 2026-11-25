@@ -1,6 +1,6 @@
 /**
  * src/commands/init-select.ts — chooses which harness sources and instruction file `yoke init` imports.
- * Pure selection logic (DI5, DI6) plus a prompt wrapper that takes an injected PromptApi, so no terminal is needed to test it.
+ * Pure selection logic plus a prompt wrapper that takes an injected PromptApi, so no terminal is needed to test it.
  */
 import {
   type HarnessAvailability,
@@ -39,12 +39,12 @@ export interface PromptApi {
 /** Picker value that means "import no instructions". Absolute paths can never equal it. */
 const NO_INSTRUCTIONS = "none";
 
-/** Compares instruction contents: CRLF becomes LF and trailing whitespace at end of file is ignored (DI6). */
+/** Compares instruction contents: CRLF becomes LF and trailing whitespace at end of file is ignored. */
 function normaliseInstructions(content: string): string {
   return content.replace(/\r\n/g, "\n").trimEnd();
 }
 
-/** Collapses identical instruction contents to their first occurrence and reports what remains (DI6). */
+/** Collapses identical instruction contents to their first occurrence and reports what remains. */
 export function decideInstructions(
   candidates: readonly InstructionCandidate[],
 ): InstructionDecision {
@@ -89,7 +89,7 @@ function availableHarness(sources: ImportSources, name: string): HarnessImport {
 }
 
 /**
- * Resolves non-interactive --import-from tokens into a selection (DI3, DI4, DI6).
+ * Resolves non-interactive --import-from tokens into a selection.
  * Harness tokens are merged by name; a `name:mcps` token only applies when every token for that name is `:mcps`.
  */
 export function selectFromTokens(
@@ -224,7 +224,7 @@ export function applyPicks(
   return { harnesses, instructions: candidate };
 }
 
-/** Interactive flow (DI5): harness multiselect, then an instruction select only when the candidates differ. */
+/** Interactive flow: harness multiselect, then an instruction select only when the candidates differ. */
 export async function promptImportSelection(
   sources: ImportSources,
   api: PromptApi,

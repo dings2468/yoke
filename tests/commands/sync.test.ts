@@ -241,7 +241,7 @@ describe("runSync", () => {
     expect((await readdir(sb.backupsRoot)).length).toBeGreaterThan(0);
   });
 
-  it("interactive abort: exit 3, prompt shown once with the SPEC options, nothing written", async () => {
+  it("interactive abort: exit 3, prompt shown once with the Overwrite and Abort options, nothing written", async () => {
     const sb = await driftedSandbox();
     const before = await snapshotTree(sb.root);
     const prompt = answerPrompt("abort");

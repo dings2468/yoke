@@ -184,7 +184,7 @@ describe("planClaudeMcp: zero-clobber user patch", () => {
   });
 });
 
-describe("planClaudeMcp: compiled local tier (Q2)", () => {
+describe("planClaudeMcp: compiled local tier", () => {
   it("puts local servers in projects[repo].mcpServers and keeps project servers in .mcp.json", async () => {
     await fixtureText("claude/home/.claude.json", userConfigPath());
     const config = await loadFixtureConfig(sb, { project: "project.yaml", local: "local.yaml" });

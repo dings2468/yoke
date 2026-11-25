@@ -268,7 +268,7 @@ function isDriftStatus(status: EntryStatus): boolean {
 }
 
 /**
- * Gate entries (D2): drift lines grouped by `<harness>:<scope>`, then lock-corrupt and drift-unchecked reasons.
+ * Gate entries: drift lines grouped by `<harness>:<scope>`, then lock-corrupt and drift-unchecked reasons.
  * Returns lines joined with "\n" and no trailing newline.
  */
 export function renderGate(
@@ -312,7 +312,7 @@ export function renderGate(
 }
 
 /**
- * Refusal text (D2). Non-interactive: the refused header, the gate block, and the --force hint.
+ * Refusal text. Non-interactive: the refused header, the gate block, and the --force hint.
  * Interactive (the user chose Abort): the aborted line, followed by the gate block.
  */
 export function renderRefusal(

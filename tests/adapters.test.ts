@@ -63,7 +63,7 @@ const ADAPTERS: readonly AdapterSpec[] = [
   { name: "agy", create: createAgyAdapter, versionOutput: "agy 1.5.16", version: "1.5.16" },
 ];
 
-/** D11: v0.1 capability values, identical for both adapters. */
+/** v0.1 capability values, identical for both adapters. */
 const EXPECTED_CAPABILITIES: HarnessCapabilities = {
   staticMcp: true,
   staticInstructions: true,
@@ -187,7 +187,7 @@ function comparable(
   );
 }
 
-/** Lock built from what the plans expect, the same way a real sync records it (SPEC §4.3). */
+/** Lock built from what the plans expect, the same way a real sync records it. */
 function buildLock(plans: ReadonlyMap<AdapterName, readonly FileChangePlan[]>): YokeStateLock {
   const entries: Record<string, StateEntry> = {};
   for (const [name, list] of plans) {

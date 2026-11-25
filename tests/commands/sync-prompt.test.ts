@@ -32,7 +32,7 @@ function fakeApi(answer: string | symbol): { api: DriftPromptApi; calls: SelectC
 const plan = {} as SyncPlan;
 
 describe("createDriftConfirm", () => {
-  it("shows the SPEC §5 message and the two choices in order, calling select once", async () => {
+  it("shows the drift message and the two choices in order, calling select once", async () => {
     const { api, calls } = fakeApi("overwrite");
     await createDriftConfirm(api)(plan);
     expect(calls).toHaveLength(1);
