@@ -125,6 +125,8 @@ export interface HarnessAdapter {
   syncStatic(config: ResolvedYokeConfig, opts: SyncOptions): Promise<FileChangePlan[]>;
   exportLatestSession?(repoPath: string): Promise<YokeSessionIR | null>;
   importAndLaunch?(session: YokeSessionIR, opts: LaunchOptions): Promise<void>;
+  /** Optional read-only advice for doctor about this harness's native files in the repository. Never a problem. */
+  doctorWarnings?(p: { readonly repoPath: string }): Promise<readonly string[]>;
 }
 
 /** A native entry that cannot be read safely: corrupt owned key, or an error for a server yoke defines. */
