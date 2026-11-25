@@ -4,7 +4,7 @@
   "private": true,
   "description": "One config, any coding harness. Sync MCP servers, instructions, and sessions across AI coding CLIs.",
   "type": "module",
-  "license": "UNLICENSED",
+  "license": "MIT",
   "engines": {
     "node": ">=20.19.0"
   },
