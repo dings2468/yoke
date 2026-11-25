@@ -33,7 +33,9 @@ Use [Conventional Commits](https://www.conventionalcommits.org/): `type(scope): 
 - Common scopes: `schema`, `scopes`, `fs-safe`, `plan`, `drift`, `instructions`, `claude`, `agy`, `init`, `sync`, `doctor`, `cli`, `spec`, `agents`, `backlog`, `sandbox`, `release`.
 - Do not use `chore(merge)`. Squash merging replaces merge commits.
 
-PRs are **squash-merged**. The **PR title becomes the commit subject** on `main` (GitHub appends ` (#N)`), and the PR description becomes the commit body. Write the title as a final commit subject. Commits inside the branch can be informal. Do not put `Co-Authored-By` lines in PR descriptions.
+PRs are **squash-merged**. The **PR title becomes the commit subject** on `main` (GitHub appends ` (#N)`), and the PR description becomes the commit body. Write the title as a final commit subject. Commits inside the branch can be informal.
+
+The squash commit is authored by the PR author (GitHub uses the PR author), so the author credit is automatic. Do not add a trailer for it. To credit a real human co-author, add a GitHub `Co-authored-by: Name <id+username@users.noreply.github.com>` line to the PR description, one line per person, using their real GitHub noreply email. Do not put model or tool attribution (for example Claude or Haiku `Co-Authored-By` trailers) in PR descriptions or squash commit messages. These are not GitHub accounts, and GitHub would record them as co-authors on `main`.
 
 ## Pull requests
 
