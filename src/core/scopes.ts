@@ -2,7 +2,7 @@
  * src/core/scopes.ts — 3-tier scope merge (SPEC §3.1, §4.1). Pure: no I/O, no environment reads, no clock.
  * Inputs are already-parsed, already-validated scope files; loading them is a separate step.
  */
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 import { parse as parseYaml } from "yaml";
 import {
   createYokeDefaults,
@@ -30,7 +30,7 @@ export interface ScopeInput {
 export type ScopeInputs = Partial<Record<Scope, ScopeInput>>;
 
 export interface ResolveOptions {
-  /** absolute repo root; default instructions.source resolves here */
+  /** absolute repo root */
   readonly projectDir: string;
   readonly warn: (message: string) => void;
 }
@@ -174,8 +174,6 @@ export function resolveConfig(inputs: ScopeInputs, opts: ResolveOptions): Resolv
   const defaults = createYokeDefaults();
   let mode = defaults.mode;
   let harnesses: string[] = defaults.harnesses;
-  let source = resolve(opts.projectDir, defaults.instructions.source);
-  let preferSymlink = defaults.instructions.preferSymlink;
   let maxTurns = defaults.session.maxTurns;
   let includeGitDiffStat = defaults.session.includeGitDiffStat;
   const layers: ResolvedYokeConfig["layers"] = {};
@@ -188,7 +186,7 @@ export function resolveConfig(inputs: ScopeInputs, opts: ResolveOptions): Resolv
     if (!isAbsolute(input.baseDir)) {
       throw new Error(`${scope} baseDir must be an absolute path: ${input.baseDir}`);
     }
-    const { config, baseDir } = input;
+    const { config } = input;
     layers[scope] = structuredClone(config);
 
     if (config.mode !== undefined) {
@@ -196,12 +194,6 @@ export function resolveConfig(inputs: ScopeInputs, opts: ResolveOptions): Resolv
     }
     if (config.harnesses !== undefined) {
       harnesses = [...config.harnesses];
-    }
-    if (config.instructions?.source !== undefined) {
-      source = resolve(baseDir, config.instructions.source);
-    }
-    if (config.instructions?.preferSymlink !== undefined) {
-      preferSymlink = config.instructions.preferSymlink;
     }
     if (config.session?.maxTurns !== undefined) {
       maxTurns = config.session.maxTurns;
@@ -216,7 +208,6 @@ export function resolveConfig(inputs: ScopeInputs, opts: ResolveOptions): Resolv
     mode,
     harnesses,
     mcps: mergeMcpServers(inputs, opts.warn),
-    instructions: { source, preferSymlink },
     session: { maxTurns, includeGitDiffStat },
     layers,
   });

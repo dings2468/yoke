@@ -30,7 +30,6 @@ describe("yoke.yaml scope file schema", () => {
         },
         github: { enabled: false },
       },
-      instructions: { source: "AGENTS.md", preferSymlink: true },
       session: { maxTurns: 40, includeGitDiffStat: true },
     });
   });
@@ -43,6 +42,16 @@ describe("yoke.yaml scope file schema", () => {
       // biome-ignore lint/suspicious/noTemplateCurlyInString: literal ${VAR} reference must be preserved
       "Bearer ${LINEAR_API_KEY}",
     );
+  });
+
+  it("rejects a yoke.yaml that still has the removed instructions key", () => {
+    const result = YokeConfigSchema.safeParse(readYaml("invalid-instructions-key.yaml"));
+    expect(result.success).toBe(false);
+    if (result.success) {
+      return;
+    }
+    const messages = result.error.issues.map((issue) => issue.message).join("\n");
+    expect(messages).toMatch(/unrecognized key.*instructions/i);
   });
 
   it("accepts a minimal file with only version", () => {

@@ -1,7 +1,5 @@
 version: 1
 mode: hybrid
-instructions:
-  source: docs/AGENTS.md
 mcps:
   search:
     transport: http
