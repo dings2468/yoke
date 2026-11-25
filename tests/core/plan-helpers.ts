@@ -13,9 +13,8 @@ import {
   type HarnessAdapter,
   type HarnessCapabilities,
   type HarnessStatus,
-  instructionSources,
   layerView,
-  planInstructionTarget,
+  planInstructionLink,
   planJsonKeyPatch,
   readFileSnapshot,
   toDefinition,
@@ -158,21 +157,12 @@ async function planStatic(
     plans.push(withFaults(plan, opts));
   }
   if (sync.scopes.includes("project")) {
-    const sources = instructionSources(config, {
-      repoPath: sync.repoPath,
-      userConfigDir: ctx.userConfigDir,
-    });
-    const plan = await planInstructionTarget(
+    const plan = await planInstructionLink(
       { ...ctx, fs },
       {
-        target: name,
-        validTargets: config.harnesses,
         scope: "project",
         linkPath: paths.instructions,
-        sourcePath: sources.project,
-        localPath: undefined,
-        preferSymlink: config.instructions.preferSymlink,
-        warnings: [],
+        sourcePath: join(sync.repoPath, "AGENTS.md"),
       },
     );
     if (plan !== undefined) {

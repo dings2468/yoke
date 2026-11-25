@@ -1,5 +1,5 @@
-import { readFile, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { lstat, readFile, writeFile } from "node:fs/promises";
+import { join, relative } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   type AdapterContext,
@@ -16,6 +16,7 @@ import {
 } from "../../src/adapters/claude.js";
 import { diffScope, groupExpected, stateEntryFor } from "../../src/core/drift.js";
 import { createNodeFs, type Fs, isNotFound } from "../../src/core/fs-safe.js";
+import { GENERATED_HEADER } from "../../src/core/instructions.js";
 import { parseJsonText } from "../../src/core/json-text.js";
 import {
   type McpServerDefinition,
@@ -256,29 +257,112 @@ describe("planClaudeSync: round trip", () => {
 });
 
 describe("planClaudeSync: instructions", () => {
-  it("links plain instructions and compiles only the claude block for blocks", async () => {
+  const projectClaudeMd = (): string => join(sb.repo, "CLAUDE.md");
+  const userClaudeMd = (): string => join(sb.home, ".claude", "CLAUDE.md");
+
+  it("links the user CLAUDE.md to the user AGENTS.md and writes no project file", async () => {
+    await copyFixture(sb, "instructions/AGENTS.plain.md", join(sb.userConfigDir, "AGENTS.md"));
     await copyFixture(sb, "instructions/AGENTS.plain.md", join(sb.repo, "AGENTS.md"));
-    const plain = await inlineConfig({ project: "version: 1\nharnesses: [claude, agy]\n" });
-    const plainPlans = await planClaudeSync(
-      makeAdapterContext(sb, { symlinksSupported: true }),
-      plain,
-      syncOpts(["project"]),
+    const config = await inlineConfig({});
+    const ctx = makeAdapterContext(sb, { symlinksSupported: true });
+    const plans = await planClaudeSync(ctx, config, syncOpts(["user", "project", "local"]));
+
+    const link = plans.find((plan) => plan.path === userClaudeMd());
+    expect(link?.action).toBe("symlink");
+    expect(link?.link?.after).toBe(
+      relative(join(sb.home, ".claude"), join(sb.userConfigDir, "AGENTS.md")),
     );
-    expect(plainPlans.find((plan) => plan.path === join(sb.repo, "CLAUDE.md"))?.action).toBe(
-      "symlink",
+    expect(plans.some((plan) => plan.path === projectClaudeMd() && plan.action !== "noop")).toBe(
+      false,
     );
 
-    await copyFixture(sb, "instructions/AGENTS.blocks.md", join(sb.repo, "AGENTS.md"));
-    const blocks = await planClaudeSync(
-      makeAdapterContext(sb, { symlinksSupported: true }),
-      plain,
+    await applyAll(plans);
+    expect((await lstat(userClaudeMd())).isSymbolicLink()).toBe(true);
+    expect(await readFile(userClaudeMd(), "utf8")).toContain("Use TypeScript strict mode.");
+    expect(await exists(projectClaudeMd())).toBe(false);
+  });
+
+  it("warns about a user-written project CLAUDE.md that does not start with @AGENTS.md, and leaves it", async () => {
+    await copyFixture(sb, "instructions/AGENTS.plain.md", join(sb.repo, "AGENTS.md"));
+    await writeFile(projectClaudeMd(), "# Mine\n", "utf8");
+    const plans = await planClaudeSync(
+      makeAdapterContext(sb),
+      await inlineConfig({}),
       syncOpts(["project"]),
     );
-    const compiled = blocks.find((plan) => plan.path === join(sb.repo, "CLAUDE.md"));
-    expect(compiled?.after).toContain("TodoWrite");
-    expect(compiled?.after).not.toContain("Antigravity");
+
+    const warnings = plans.flatMap((plan) => plan.warnings);
+    expect(warnings).toContainEqual(
+      `claude: ${projectClaudeMd()} does not start with the line @AGENTS.md, so Claude will not read the shared AGENTS.md; add it as the first line`,
+    );
+    await applyAll(plans);
+    expect(await readFile(projectClaudeMd(), "utf8")).toBe("# Mine\n");
+  });
+
+  it("accepts a user-written project CLAUDE.md whose first non-blank line is @AGENTS.md", async () => {
+    await copyFixture(sb, "instructions/AGENTS.plain.md", join(sb.repo, "AGENTS.md"));
+    await writeFile(projectClaudeMd(), "\n@AGENTS.md\n\n# Claude notes\n", "utf8");
+    const plans = await planClaudeSync(
+      makeAdapterContext(sb),
+      await inlineConfig({}),
+      syncOpts(["project"]),
+    );
+
+    expect(plans.flatMap((plan) => plan.warnings)).toEqual([]);
+    expect(plans.some((plan) => plan.action === "remove")).toBe(false);
+  });
+
+  it("removes a yoke-generated project CLAUDE.md with a backup and records no instructions hash", async () => {
+    await copyFixture(sb, "instructions/AGENTS.plain.md", join(sb.repo, "AGENTS.md"));
+    await writeFile(projectClaudeMd(), `${GENERATED_HEADER}\n\nold generated text\n`, "utf8");
+    const plans = await planClaudeSync(
+      makeAdapterContext(sb),
+      await inlineConfig({}),
+      syncOpts(["project"]),
+    );
+    const removal = plans.find((plan) => plan.path === projectClaudeMd());
+    expect(removal?.action).toBe("remove");
+    expect(removal?.expected).toContainEqual({
+      kind: "instructions",
+      scope: "project",
+      instructions: null,
+    });
+
+    const result = await removal?.apply(makeApplyContext(sb));
+    expect(result?.status).toBe("written");
+    expect(result?.backupPath).toBeDefined();
+    expect(await exists(projectClaudeMd())).toBe(false);
+  });
+
+  it("warns with line numbers when AGENTS.md still has legacy yoke tags", async () => {
+    await writeFile(
+      join(sb.repo, "AGENTS.md"),
+      "# Shared\n\n<!-- yoke:claude-only -->\nTodo tools.\n<!-- /yoke:claude-only -->\n",
+      "utf8",
+    );
+    const plans = await planClaudeSync(
+      makeAdapterContext(sb),
+      await inlineConfig({}),
+      syncOpts(["project"]),
+    );
+
+    expect(plans.flatMap((plan) => plan.warnings)).toContainEqual(
+      `claude: ${join(sb.repo, "AGENTS.md")} has legacy yoke:*-only tags on lines 3, 5; move claude-only text to CLAUDE.md, agy-only text to GEMINI.md`,
+    );
   });
 });
+
+async function exists(path: string): Promise<boolean> {
+  try {
+    await lstat(path);
+    return true;
+  } catch (error: unknown) {
+    if (isNotFound(error)) {
+      return false;
+    }
+    throw error;
+  }
+}
 
 describe("detectClaude", () => {
   it("reports the version from --version and authentication from the user config", async () => {

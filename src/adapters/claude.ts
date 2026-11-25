@@ -5,9 +5,9 @@
  * goes through an injected ReadFs, and nothing here touches the disk, the environment, or the clock beyond `env`.
  */
 import { isAbsolute, join } from "node:path";
-import { localOverridePath } from "../core/compiler.js";
 import { isNotFound, type ReadFs, readJsonIfExists, toReadFs } from "../core/fs-safe.js";
 import type { Env, ExecResult } from "../core/git.js";
+import { findConditionalTags, hasGeneratedHeader } from "../core/instructions.js";
 import {
   getAtPath,
   isJsonObject,
@@ -37,12 +37,13 @@ import {
   type HarnessAdapter,
   type HarnessCapabilities,
   type HarnessStatus,
-  instructionSources,
+  type InstructionRemovalInput,
   layerView,
   mergeServerEntries,
   type NativeEntry,
   NativeStateError,
-  planInstructionTarget,
+  planInstructionLink,
+  planInstructionRemoval,
   planJsonKeyPatch,
   readFileSnapshot,
   toDefinition,
@@ -638,6 +639,132 @@ export async function planClaudeDisables(
   return [plan];
 }
 
+/** True when the lock records an instructions hash for Claude at this scope, so yoke wrote that file earlier. */
+function instructionsRecorded(ctx: AdapterContext, scope: Scope): boolean {
+  return (ctx.lock?.harnesses[stateKey(CLAUDE_NAME, scope)]?.instructionsHash ?? null) !== null;
+}
+
+/**
+ * A removal plan for a native instructions path that yoke may have generated. A user-written file that the lock does
+ * not record is never planned, so it produces no warning and is never touched. A missing path with no lock record is
+ * skipped too.
+ */
+async function planGeneratedRemoval(
+  ctx: AdapterContext,
+  input: InstructionRemovalInput,
+): Promise<FileChangePlan | undefined> {
+  if (input.recordedInLock !== true) {
+    const snap = await readFileSnapshot(ctx.fs, input.path);
+    if (snap.kind === "missing") {
+      return undefined;
+    }
+    if (snap.kind === "file" && !hasGeneratedHeader(snap.content)) {
+      return undefined;
+    }
+  }
+  return planInstructionRemoval(ctx, input);
+}
+
+/** An advisory warning when a canonical AGENTS.md still has legacy yoke:*-only tags (decision 4). */
+async function legacyTagPlan(
+  ctx: AdapterContext,
+  scope: Scope,
+  sourcePath: string,
+): Promise<FileChangePlan | undefined> {
+  const snap = await readFileSnapshot(ctx.fs, sourcePath);
+  if (snap.kind !== "file") {
+    return undefined;
+  }
+  const lines = findConditionalTags(snap.content);
+  if (lines.length === 0) {
+    return undefined;
+  }
+  const plural = lines.length === 1 ? "" : "s";
+  return advisoryPlan(scope, sourcePath, `${sourcePath}: legacy yoke tags`, [
+    `claude: ${sourcePath} has legacy yoke:*-only tags on line${plural} ${lines.join(", ")}; move claude-only text to CLAUDE.md, agy-only text to GEMINI.md`,
+  ]);
+}
+
+/**
+ * An advisory warning for a user-written project CLAUDE.md whose first non-blank line is not `@AGENTS.md`. Yoke never
+ * writes that file (decision 3). A file yoke generated (recorded or with the header) is left to the removal plan.
+ */
+async function claudeImportPlan(
+  ctx: AdapterContext,
+  path: string,
+  recorded: boolean,
+): Promise<FileChangePlan | undefined> {
+  const snap = await readFileSnapshot(ctx.fs, path);
+  if (snap.kind !== "file" || recorded || hasGeneratedHeader(snap.content)) {
+    return undefined;
+  }
+  const first = snap.content
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .find((line) => line !== "");
+  if (first === "@AGENTS.md") {
+    return undefined;
+  }
+  return advisoryPlan("project", path, `${path}: user-written CLAUDE.md`, [
+    `claude: ${path} does not start with the line @AGENTS.md, so Claude will not read the shared AGENTS.md; add it as the first line`,
+  ]);
+}
+
+/**
+ * Plans Claude's instruction files (decisions 3, 6-8). User scope links CLAUDE.md to the canonical user AGENTS.md. Project
+ * and local scope write no file: a yoke-generated CLAUDE.md or CLAUDE.local.md is removed with a backup, and a user-written
+ * CLAUDE.md gets a warning when it does not import AGENTS.md. Legacy tags in AGENTS.md get a warning.
+ */
+async function planClaudeInstructions(
+  ctx: AdapterContext,
+  opts: SyncOptions,
+): Promise<FileChangePlan[]> {
+  const paths = claudePaths(ctx.homeDir, ctx.env, opts.repoPath);
+  const userSource = join(ctx.userConfigDir, "AGENTS.md");
+  const projectSource = join(opts.repoPath, "AGENTS.md");
+  const plans: FileChangePlan[] = [];
+  const add = (plan: FileChangePlan | undefined): void => {
+    if (plan !== undefined) {
+      plans.push(plan);
+    }
+  };
+
+  if (opts.scopes.includes("user")) {
+    add(
+      await planInstructionLink(ctx, {
+        scope: "user",
+        linkPath: paths.userInstructions,
+        sourcePath: userSource,
+      }),
+    );
+    add(await legacyTagPlan(ctx, "user", userSource));
+  }
+  if (opts.scopes.includes("project")) {
+    const recorded = instructionsRecorded(ctx, "project");
+    add(
+      await planGeneratedRemoval(ctx, {
+        scope: "project",
+        path: paths.projectInstructions,
+        sourcePath: projectSource,
+        recordedInLock: recorded,
+      }),
+    );
+    add(await claudeImportPlan(ctx, paths.projectInstructions, recorded));
+    add(await legacyTagPlan(ctx, "project", projectSource));
+  }
+  if (opts.scopes.includes("local")) {
+    add(
+      await planGeneratedRemoval(ctx, {
+        scope: "local",
+        path: paths.localInstructions,
+        sourcePath: projectSource,
+        recordedInLock: instructionsRecorded(ctx, "local"),
+      }),
+    );
+  }
+  return plans;
+}
+
 /**
  * Plans every Claude file for the requested scopes: MCP keys, disable list, and instructions. Reads only. Each
  * FileChangePlan carries an apply closure built by the shared commit functions, which are the only writers.
@@ -654,61 +781,7 @@ export async function planClaudeSync(
     project: plannedMcps(mcp, "project") ?? native.project?.mcps ?? {},
   };
   const disables = await planClaudeDisables(ctx, config, opts, post);
-
-  const paths = claudePaths(ctx.homeDir, ctx.env, opts.repoPath);
-  const sources = instructionSources(config, {
-    repoPath: opts.repoPath,
-    userConfigDir: ctx.userConfigDir,
-  });
-  const compiled = config.mode === "compiled";
-  const instructions: FileChangePlan[] = [];
-  const keep = (plan: FileChangePlan | undefined): void => {
-    if (plan !== undefined) {
-      instructions.push(plan);
-    }
-  };
-  if (opts.scopes.includes("user")) {
-    keep(
-      await planInstructionTarget(ctx, {
-        target: CLAUDE_NAME,
-        validTargets: config.harnesses,
-        scope: "user",
-        linkPath: paths.userInstructions,
-        sourcePath: sources.user,
-        localPath: undefined,
-        preferSymlink: config.instructions.preferSymlink,
-        warnings: [],
-      }),
-    );
-  }
-  if (opts.scopes.includes("project")) {
-    keep(
-      await planInstructionTarget(ctx, {
-        target: CLAUDE_NAME,
-        validTargets: config.harnesses,
-        scope: "project",
-        linkPath: paths.projectInstructions,
-        sourcePath: sources.project,
-        localPath: compiled ? localOverridePath(sources.project) : undefined,
-        preferSymlink: config.instructions.preferSymlink,
-        warnings: [],
-      }),
-    );
-  }
-  if (opts.scopes.includes("local") && !compiled) {
-    keep(
-      await planInstructionTarget(ctx, {
-        target: CLAUDE_NAME,
-        validTargets: config.harnesses,
-        scope: "local",
-        linkPath: paths.localInstructions,
-        sourcePath: localOverridePath(sources.project),
-        localPath: undefined,
-        preferSymlink: config.instructions.preferSymlink,
-        warnings: [],
-      }),
-    );
-  }
+  const instructions = await planClaudeInstructions(ctx, opts);
 
   return [...mcp, ...disables, ...instructions];
 }

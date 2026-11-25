@@ -3,7 +3,7 @@
  * Every path is injected into a sandbox. The real ~/.gemini and the real GEMINI.md locations are never touched.
  */
 import { lstat, readFile, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   AGY_CAPABILITIES,
@@ -16,6 +16,7 @@ import {
 import type { FileChangePlan } from "../../src/adapters/base.js";
 import { diffScope, groupExpected, stateEntryFor } from "../../src/core/drift.js";
 import { createNodeFs } from "../../src/core/fs-safe.js";
+import { GENERATED_HEADER } from "../../src/core/instructions.js";
 import {
   getAtPath,
   isJsonObject,
@@ -186,44 +187,60 @@ describe("agy sync plan", () => {
     expect(await exists(mcpConfig)).toBe(false);
   });
 
-  it("symlinks GEMINI.md to the plain user and project sources", async () => {
+  it("links the user GEMINI.md to the user AGENTS.md and writes no project GEMINI.md", async () => {
     const config = await loadFixtureConfig(sb, {});
     const plans = await planAgySync(
-      makeAdapterContext(sb),
+      makeAdapterContext(sb, { symlinksSupported: true }),
       config,
       syncOptions(sb, ["user", "project"]),
     );
-    expect(planFor(plans, "user", "GEMINI.md").action).toBe("symlink");
-    expect(planFor(plans, "project", "GEMINI.md").action).toBe("symlink");
+    const link = planFor(plans, "user", "GEMINI.md");
+    expect(link.action).toBe("symlink");
+    expect(link.link?.after).toBe(
+      relative(join(sb.home, ".gemini"), join(sb.userConfigDir, "AGENTS.md")),
+    );
+    expect(plans.some((plan) => plan.path === projectGemini)).toBe(false);
 
     await applyAll(sb, plans);
     expect((await lstat(userGemini)).isSymbolicLink()).toBe(true);
-    expect((await lstat(projectGemini)).isSymbolicLink()).toBe(true);
     expect(await readFile(userGemini, "utf8")).toContain("Use TypeScript strict mode.");
-    expect(await readFile(projectGemini, "utf8")).toContain("Use TypeScript strict mode.");
+    expect(await exists(projectGemini)).toBe(false);
   });
 
-  it("compiles agy blocks only for a blocks source, without the claude-only text", async () => {
-    await copyFixture(sb, "instructions/AGENTS.blocks.md", join(sb.repo, "AGENTS.md"));
-    const config = await loadFixtureConfig(sb, { project: "project.yaml" });
+  it("removes a yoke-generated project GEMINI.md with a backup", async () => {
+    await writeFile(projectGemini, `${GENERATED_HEADER}\n\nold text\n`, "utf8");
+    const config = await loadFixtureConfig(sb, {});
     const plans = await planAgySync(makeAdapterContext(sb), config, syncOptions(sb, ["project"]));
-    const instructions = planFor(plans, "project", "GEMINI.md");
+    const removal = planFor(plans, "project", "GEMINI.md");
+    expect(removal.action).toBe("remove");
 
-    expect(instructions.action).toBe("create");
-    expect(instructions.after).toContain("Antigravity-specific");
-    expect(instructions.after).not.toContain("TodoWrite");
-    expect(instructions.after).not.toContain("Claude-specific");
+    const result = await removal.apply(makeApplyContext(sb));
+    expect(result.status).toBe("written");
+    expect(result.backupPath).toBeDefined();
+    expect(await exists(projectGemini)).toBe(false);
   });
 
-  it("hybrid mode warns when a local instructions override exists and does not apply it", async () => {
-    await writeFile(join(sb.repo, "AGENTS.local.md"), "Local only.\n", "utf8");
-    const config = await loadFixtureConfig(sb, { project: "hybrid-project.yaml" });
-    expect(config.mode).toBe("hybrid");
+  it("leaves a user-written project GEMINI.md alone and plans nothing for it", async () => {
+    await writeFile(projectGemini, "# agy only\n", "utf8");
+    const config = await loadFixtureConfig(sb, {});
     const plans = await planAgySync(makeAdapterContext(sb), config, syncOptions(sb, ["project"]));
-    const instructions = planFor(plans, "project", "GEMINI.md");
 
-    expect(instructions.warnings).toContain(
-      `agy: ${join(sb.repo, "AGENTS.local.md")} cannot be isolated in hybrid mode; not applied`,
+    expect(plans.some((plan) => plan.path === projectGemini)).toBe(false);
+    await applyAll(sb, plans);
+    expect(await readFile(projectGemini, "utf8")).toBe("# agy only\n");
+  });
+
+  it("warns with line numbers when AGENTS.md still has legacy yoke tags", async () => {
+    await writeFile(
+      join(sb.repo, "AGENTS.md"),
+      "# Shared\n\n<!-- yoke:agy-only -->\nUse the agy launcher.\n<!-- /yoke:agy-only -->\n",
+      "utf8",
+    );
+    const config = await loadFixtureConfig(sb, {});
+    const plans = await planAgySync(makeAdapterContext(sb), config, syncOptions(sb, ["project"]));
+
+    expect(plans.flatMap((plan) => plan.warnings)).toContainEqual(
+      `agy: ${join(sb.repo, "AGENTS.md")} has legacy yoke:*-only tags on lines 3, 5; move claude-only text to CLAUDE.md, agy-only text to GEMINI.md`,
     );
   });
 

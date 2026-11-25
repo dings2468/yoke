@@ -68,9 +68,9 @@ describe("findConditionalTags", () => {
     expect(findConditionalTags(text)).toEqual([2, 4]);
   });
 
-  it("does not report tags for other harness names or unrelated yoke comments", () => {
+  it("reports any leftover *-only tag, for any harness name, but not unrelated yoke comments", () => {
     const text = "<!-- yoke:gemini-only -->\n<!-- yoke:note -->\n<!-- yoke:claude -->\n";
-    expect(findConditionalTags(text)).toEqual([]);
+    expect(findConditionalTags(text)).toEqual([1]);
   });
 
   it("reports tags inside fenced code, since the scan does not parse fences", () => {
