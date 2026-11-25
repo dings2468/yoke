@@ -2,7 +2,8 @@
  * src/adapters/agy.ts: agy (Antigravity) paths and MCP entry translation (SPEC §6).
  *
  * Facts used here:
- * - The GEMINI.md locations and the `agy` binary name are UNVERIFIED (SPEC §6).
+ * - agy loads the project `GEMINI.md` alongside `AGENTS.md` (observed: a model turn listed both as loaded instruction files).
+ * - The user `~/.gemini/GEMINI.md` location and the `agy` binary name are UNVERIFIED (SPEC §6).
  * - agy 1.5.16 does not expand `${VAR}` references. yoke stores them literally.
  * - agy 1.5.16 writes `serverUrl` for HTTP servers. yoke writes `url` (SPEC §6) and reads both keys.
  * - agy has no SSE transport. SSE servers are never translated here.
@@ -62,7 +63,7 @@ export interface AgyPaths {
   readonly mcpConfig: string;
   /** `<home>/.gemini/GEMINI.md`, UNVERIFIED */
   readonly userInstructions: string;
-  /** `<repo>/GEMINI.md`, UNVERIFIED */
+  /** `<repo>/GEMINI.md`, loaded alongside AGENTS.md (observed) */
   readonly projectInstructions: string;
 }
 
@@ -453,8 +454,8 @@ async function legacyTagPlan(
 /**
  * Plans the agy instruction files (decisions 2, 6-8). User scope links `<home>/.gemini/GEMINI.md` to the canonical user
  * AGENTS.md. Project scope writes no file: a yoke-generated `<repo>/GEMINI.md` is removed with a backup, and a
- * user-written one is never touched. Legacy tags in AGENTS.md get a warning. The GEMINI.md locations are UNVERIFIED
- * (SPEC §6).
+ * user-written one is never touched. Legacy tags in AGENTS.md get a warning. The project GEMINI.md is observed to load
+ * alongside AGENTS.md; the user `~/.gemini/GEMINI.md` location is UNVERIFIED (SPEC §6).
  */
 async function planAgyInstructions(
   ctx: AdapterContext,
@@ -510,8 +511,8 @@ export async function planAgySync(
 }
 
 /**
- * Detects the agy binary. Runs `agy --version` only, and writes nothing. `authenticated` is always false in v0.1:
- * the probe that would prove it (`agy models`, SPEC §7) is unverified and may reach the network.
+ * Detects the agy binary. Runs `agy --version` only, and writes nothing. `authenticated` is always false in v0.1.
+ * v0.1 runs no login probe (SPEC §6); doctor reports auth as unknown.
  */
 export async function detectAgy(ctx: AdapterContext): Promise<HarnessStatus> {
   let result: ExecResult;
