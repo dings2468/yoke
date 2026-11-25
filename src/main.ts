@@ -86,7 +86,7 @@ export function buildProgram(deps: CliDeps, setExit: (code: number) => void): Co
   program
     .command("init")
     .description(
-      "Create yoke.yaml, yoke.local.yaml, AGENTS.md, and .gitignore lines. Can import from harnesses.",
+      "Create yoke.yaml and .gitignore lines; imports MCP servers and AGENTS.md from harnesses or files (yoke.local.yaml only when needed).",
     )
     .option(
       "--import-from <source...>",
