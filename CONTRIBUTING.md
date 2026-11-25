@@ -9,7 +9,7 @@ Architecture and safety rules live in [AGENTS.md](AGENTS.md) and [SPEC.md](SPEC.
 yoke uses trunk-based development:
 
 - `main` is always releasable. All work lands on `main` through short-lived branches and squash-merged pull requests.
-- A release is an annotated tag `vX.Y.Z` on a commit on `main`, published as a GitHub Release (releases are immutable).
+- A release is an annotated tag `vX.Y.Z` on a commit on `main`, published as a GitHub Release.
 - A `release/X.Y` branch exists only when a patch must ship while `main` holds unreleased work. See "Hotfixes".
 
 ## Branch names
@@ -42,8 +42,6 @@ The squash commit is authored by the PR author (GitHub uses the PR author), so t
 - One topic per PR; keep it small and short-lived. Rebase on `main` if it falls behind (`git fetch origin && git rebase origin/main`).
 - Link the backlog task in the description (`TASK-<id>`).
 - Every adapter change includes fixture-based vitest tests (see AGENTS.md).
-- `main` requires a PR, linear history, and squash merges. Force pushes to and deletion of `main` are blocked.
-- Merged branches are deleted automatically.
 
 ## Verification checklist (every PR)
 
@@ -115,7 +113,7 @@ Version numbers live in `package.json`, `package-lock.json`, and `src/main.ts` (
    ```bash
    gh release create vX.Y.Z --verify-tag --title "vX.Y.Z" --notes-file /path/to/notes.md --latest
    ```
-   Releases are immutable once published: the tag cannot be moved or deleted. Check the notes before running this. Never move or reuse a tag; ship a new patch version instead.
+   Check the notes before running this. Never move or reuse a tag; ship a new patch version instead.
 
 Rules:
 - A `vX.Y.0` tag always points at a commit on `main`.
@@ -165,7 +163,7 @@ The log is empty or holds only changes you are happy to ship (docs, tests, chore
    ```
    Open the PR into `main` and squash-merge. Keep the backlog task In Progress until both PRs are merged.
 
-Squash merging and linear history mean `release/X.Y` and `main` never share these commits. The same fix exists as two different commits; that is expected.
+Squash merging means `release/X.Y` and `main` never share these commits. The same fix exists as two different commits; that is expected.
 
 To avoid divergence:
 - Every fix lands on both lines.
@@ -178,4 +176,4 @@ To avoid divergence:
 - `main` has nothing you would not ship. Release the patch from `main` (Case 1).
 - The change is a feature or anything that is not a fix for a released bug.
 - To prepare a minor or major release. Those are always cut from `main`.
-- Keep at most the latest minor line patched. Older `release/*` branches stay frozen; they cannot be deleted.
+- Keep at most the latest minor line patched. Older `release/*` branches stay frozen.
