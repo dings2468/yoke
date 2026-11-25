@@ -1,0 +1,9 @@
+#!/bin/sh
+# Sandbox stub for the Antigravity CLI (agy). NOT the real agy: it only answers --version
+# so yoke's detection path runs. Any other invocation fails on purpose.
+if [ "$1" = "--version" ]; then
+  echo "agy 0.0.0-sandbox-stub"
+  exit 0
+fi
+echo "agy (sandbox stub): only --version is supported in this sandbox" >&2
+exit 1

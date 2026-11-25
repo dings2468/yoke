@@ -33,6 +33,16 @@ yoke doctor
 
 `yoke sync --dry-run` prints the same plan a real run would apply and writes nothing. Use it as a CI drift check.
 
+## Try it in a sandbox
+
+`docker/sandbox/` builds a clean, disposable container with yoke, the real Claude Code CLI, and a stub `agy`, so you can use v0.1 interactively without touching your own config. HOME starts empty and nothing is seeded; run `git init` in `~/work` and log in with `claude` yourself:
+
+```bash
+npm run sandbox:build && npm run sandbox
+```
+
+See [docker/sandbox/README.md](docker/sandbox/README.md) for what is installed, login, and keeping state.
+
 ## Exit codes
 
 Exit codes for every command are listed in [SPEC.md §7](SPEC.md#7-cli-command-surface). In short: `0` success or clean, `1` failure or a doctor problem, `2` usage error, `3` drift refusal, `130` interrupted.

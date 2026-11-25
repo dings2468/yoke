@@ -13,6 +13,11 @@ Read `SPEC.md` before making architectural changes. `SPEC.md` is the source of t
   ```
 - **Parallel work uses git worktrees:** any agent or subagent that writes files runs in its own `git worktree` on its own branch (for example `git worktree add ../yoke-<task> -b <branch>`), never in the shared checkout. Merge results back through commits on the task branch.
 
+## Agent Workflow (Fixed Rule)
+- **Planning:** always done by at least a Sonnet subagent. Use an Opus subagent for complex planning (multi-component design, architectural or safety-invariant changes, ambiguous requirements).
+- **Implementation:** done by Haiku subagents, and only after a plan exists. Do not start implementation without a plan.
+- The main agent coordinates, reviews results, and runs verification (`npm run typecheck`, `npm test`, `npm run check`).
+
 ## Architecture Rules
 1. **Strict Adapter Isolation:** Harness-specific paths, JSON keys (Claude `type: "http"` + `url` vs. agy `url` only, where `serverUrl` is accepted as a legacy alias on read), and session parsers belong **exclusively** inside `src/adapters/<harness>.ts`. Never branch on harness names (`if (name === "claude")`) inside `src/core/` or `src/commands/`.
 2. **Capability-Driven Core:** Every adapter must implement `HarnessAdapter` and declare `HarnessCapabilities` (`src/adapters/base.ts`). Commands must check capabilities before invoking optional methods (`exportLatestSession`, `importAndLaunch`) and degrade gracefully. Note: agy does not support legacy HTTP+SSE, so `transport: sse` servers are skipped for agy with a warning. agy also has no v0.1 project-level MCP config, so project and local MCP servers are skipped for agy with a warning and never written to the global file.

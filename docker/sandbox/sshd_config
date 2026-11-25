@@ -1,0 +1,22 @@
+# Non-root sshd for the yoke sandbox. NO AUTHENTICATION: `tester` has an empty password and sshd accepts it.
+# Safe only because the port is published on loopback of the devcontainer (same trust domain). No root, no PAM.
+Port 2222
+ListenAddress 0.0.0.0
+HostKey /home/tester/.sshd/ssh_host_ed25519_key
+PidFile /home/tester/.sshd/sshd.pid
+AuthorizedKeysFile /home/tester/.ssh/authorized_keys
+StrictModes yes
+PubkeyAuthentication yes
+PasswordAuthentication yes
+KbdInteractiveAuthentication no
+PermitEmptyPasswords yes
+PermitRootLogin no
+UsePAM no
+AllowUsers tester
+AllowTcpForwarding yes
+GatewayPorts no
+X11Forwarding no
+PrintMotd no
+AcceptEnv LANG LC_*
+Subsystem sftp /usr/lib/openssh/sftp-server
+LogLevel INFO
