@@ -32,6 +32,10 @@ Read `SPEC.md` before making architectural changes. `SPEC.md` is the source of t
 - **Fits the fixed workflow above:** the main agent picks and updates tasks; a task's plan comes from the planning subagent, and implementation starts only after it. Task file changes are committed on the task branch like any other change.
 - Do not run `backlog init`, `backlog agents`, or MCP setup in this repo: `AGENTS.md` stays the single instruction source and no MCP config is written.
 
+## Branches, PRs, and Releases
+- Follow [CONTRIBUTING.md](CONTRIBUTING.md) for branch names, commit and PR titles, and the verification checklist.
+- Only the maintainer creates tags, GitHub Releases, `release/*` branches, and merges PRs (CONTRIBUTING.md, "Maintainer only"). Agents prepare the branch and PR; they do not publish.
+
 ## Architecture Rules
 1. **Strict Adapter Isolation:** Harness-specific paths, JSON keys (Claude `type: "http"` + `url` vs. agy `url` only, where `serverUrl` is accepted as a legacy alias on read), and session parsers belong **exclusively** inside `src/adapters/<harness>.ts`. Never branch on harness names (`if (name === "claude")`) inside `src/core/` or `src/commands/`.
 2. **Capability-Driven Core:** Every adapter must implement `HarnessAdapter` and declare `HarnessCapabilities` (`src/adapters/base.ts`). Commands must check capabilities before invoking optional methods (`exportLatestSession`, `importAndLaunch`) and degrade gracefully. Note: agy does not support legacy HTTP+SSE, so `transport: sse` servers are skipped for agy with a warning. agy also has no v0.1 project-level MCP config, so project and local MCP servers are skipped for agy with a warning and never written to the global file.
