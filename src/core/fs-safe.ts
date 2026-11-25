@@ -448,10 +448,17 @@ export {
   patchJsonKey,
 } from "./json-text.js";
 
+/** Builds the message for a JsonPatchError. A parse failure names the file and the parser's reason. */
+function jsonErrorMessage(path: string, err: JsonPatchError): string {
+  if (err.code !== "invalid-json") return err.message;
+  const reason = err.cause instanceof Error ? `: ${err.cause.message}` : "";
+  return `invalid JSON in ${path}${reason}`;
+}
+
 /** Converts a JsonPatchError into an FsSafeError that keeps the cause and the path. Other errors pass through. */
 function asFsSafeJsonError(path: string, err: unknown): unknown {
   if (err instanceof JsonPatchError) {
-    return new FsSafeError(err.message, path, { cause: err });
+    return new FsSafeError(jsonErrorMessage(path, err), path, { cause: err });
   }
   return err;
 }

@@ -80,6 +80,16 @@ describe("readJsonIfExists", () => {
     expect(err).toBeInstanceOf(FsSafeError);
     expect((err as FsSafeError).path).toBe(path);
     expect((err as FsSafeError).cause).toBeInstanceOf(JsonPatchError);
+    expect((err as FsSafeError).message).toContain(`invalid JSON in ${path}`);
+  });
+
+  it("reports an empty file as invalid JSON with the path and parser reason", async () => {
+    const path = join(dir, "empty.json");
+    await writeFile(path, "");
+    const err = await readJsonIfExists(fs, path).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(FsSafeError);
+    expect((err as FsSafeError).message).toContain(path);
+    expect((err as FsSafeError).message).toContain("Unexpected end of JSON input");
   });
 
   it("wraps unsafe integers in FsSafeError", async () => {
