@@ -9,7 +9,7 @@ function readYaml(relative: string): unknown {
 }
 
 describe("yoke.yaml scope file schema", () => {
-  it("parses the SPEC section 4.1 example to the expected object", () => {
+  it("parses the README yoke.yaml example to the expected object", () => {
     const parsed = YokeConfigSchema.parse(readYaml("spec-example.yaml"));
     expect(parsed).toEqual({
       version: 1,

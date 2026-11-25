@@ -24,7 +24,7 @@ function load(scope: Scope): ScopeInput {
   return { config, baseDir: scope === "user" ? USER_DIR : REPO_DIR };
 }
 
-describe("resolveConfig: scope merge (SPEC 3.1)", () => {
+describe("resolveConfig: scope merge rules", () => {
   it("resolves empty inputs to the defaults", () => {
     const warn = vi.fn();
     const result = resolveConfig({}, { projectDir: REPO_DIR, warn });
@@ -99,7 +99,7 @@ describe("resolveConfig: scope merge (SPEC 3.1)", () => {
     });
   });
 
-  it("keeps enabled false when a same-transport override omits enabled (A1)", () => {
+  it("keeps enabled false when a same-transport override omits enabled", () => {
     const warn = vi.fn();
     const result = resolveConfig(
       { user: load("user"), project: load("project"), local: load("local") },

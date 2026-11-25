@@ -1,9 +1,18 @@
 /**
- * src/core/fs-safe.ts — injectable filesystem layer (SPEC §9).
+ * src/core/fs-safe.ts — injectable filesystem layer.
  *
  * `ReadFs` is the read-only surface that planners receive. `Fs` adds the write methods that only
  * `apply()` closures may call, which makes dry-run parity a type-level property (AGENTS.md invariant 3).
  * Every function takes `fs` as its first parameter. There are no module-level singletons.
+ *
+ * Atomic writes: the temp file is `<name>.<random>.yoke.tmp` in the target's directory. It is created
+ * exclusively (`wx`) and then renamed into place, so a crash never leaves a partially written target.
+ *
+ * Backup layout (decision-0018): backups go to `<userConfigDir>/backups/<timestamp>/`, where the timestamp is
+ * ISO-8601 with `:` and `.` replaced by `-`. The original absolute path is mirrored under that directory, and a
+ * `-N` suffix avoids collisions between sessions. The directory is mode 0700. yoke never writes text to an
+ * instruction path; it only creates, replaces, or removes links, and removes files it generated earlier. A
+ * `remove` action is backed up first.
  */
 import { randomBytes } from "node:crypto";
 import * as fsp from "node:fs/promises";
@@ -141,7 +150,7 @@ export interface AtomicWriteOptions {
   readonly tmpSuffix?: () => string;
   /**
    * Defaults to true: a symlink at `path` is kept and its real target is written.
-   * When false, a symlink at `path` is replaced by a regular file (SPEC §8.2).
+   * When false, a symlink at `path` is replaced by a regular file (AGENTS.md invariant 2).
    */
   readonly followSymlinks?: boolean;
   /**
@@ -152,7 +161,7 @@ export interface AtomicWriteOptions {
 }
 
 /**
- * Writes `content` to `path` via a temp file in the same directory followed by `rename` (D6).
+ * Writes `content` to `path` via a temp file in the same directory followed by `rename`.
  * By default a symlink at `path` is kept: the write goes to its real target. A dangling symlink throws FsSafeError.
  * With `followSymlinks: false` the temp file is created beside the link and `rename` replaces the link itself.
  */
@@ -521,7 +530,7 @@ export interface CommitResult {
 
 /**
  * Applies a planned JSON patch. If the file changed since planning, the key is re-patched on the
- * current text (D7), so unrelated keys written by another process survive.
+ * current text, so unrelated keys written by another process survive.
  */
 export async function commitJsonPatch(
   fs: Fs,

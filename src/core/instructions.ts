@@ -1,5 +1,5 @@
 /**
- * src/core/instructions.ts — helpers for the native instruction layout (SPEC §4.2).
+ * src/core/instructions.ts — helpers for the native instruction layout (decision-0008).
  *
  * AGENTS.md is the only shared instruction file. yoke never generates project instruction text, so this module only
  * recognises files yoke used to generate (GENERATED_HEADER) and reports leftover conditional tags.

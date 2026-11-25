@@ -1,5 +1,5 @@
 /**
- * src/core/json-text.ts — pure JSON text helpers for fs-safe (plan J1, decision D2, ambiguity A9).
+ * src/core/json-text.ts — pure JSON text helpers for fs-safe.
  * No I/O: no imports except the standard library, and nothing here reads the clock, env, or disk.
  */
 

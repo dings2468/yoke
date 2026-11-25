@@ -35,7 +35,7 @@ function lockWith(desired: DesiredScopeState): StateEntry {
   return stateEntryFor(desired);
 }
 
-describe("classifyEntry (D5 order)", () => {
+describe("classifyEntry (classification order)", () => {
   const cases: [string, Parameters<typeof classifyEntry>[0], EntryStatus][] = [
     ["native equals desired", { native: "a", desired: "a" }, "in-sync"],
     ["native and lock absent", { desired: "b" }, "create"],

@@ -1,5 +1,7 @@
 /**
- * src/core/secrets.ts — literal secret detection and `${VAR}` redaction (SPEC §8.4, DI7).
+ * src/core/secrets.ts — literal secret detection and `${VAR}` redaction (AGENTS.md invariant 4).
+ * Policy: literal secret values are never written into generated project files; they are replaced by `${VAR}`
+ * references kept in the target harness's native syntax.
  * Pure: no I/O, no clock, no process access. Inputs are never mutated.
  */
 import type { EnvMap, McpServerDefinition, McpStdioServer } from "./schema.js";
