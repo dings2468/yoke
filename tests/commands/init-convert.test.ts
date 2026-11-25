@@ -282,7 +282,6 @@ describe("gitignoreLines", () => {
       "/..hidden.md",
       "/CLAUDE.md",
       "/docs/GUIDE.md",
-      "AGENTS.local.md",
       "yoke.local.yaml",
     ]);
   });
@@ -290,7 +289,7 @@ describe("gitignoreLines", () => {
   it("ignores generated paths in hybrid mode", () => {
     expect(
       gitignoreLines({ mode: "hybrid", repoPath: "/repo", generatedPaths: ["/repo/CLAUDE.md"] }),
-    ).toEqual([".yoke/", "AGENTS.local.md", "yoke.local.yaml"]);
+    ).toEqual([".yoke/", "yoke.local.yaml"]);
   });
 });
 

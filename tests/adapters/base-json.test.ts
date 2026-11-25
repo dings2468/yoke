@@ -368,7 +368,7 @@ describe("composable plans", () => {
   });
 
   it("leaves composable undefined on advisory plans", () => {
-    const plan = advisoryPlan("local", join(sb.repo, "AGENTS.local.md"), "skip", ["w"]);
+    const plan = advisoryPlan("local", join(sb.repo, "CLAUDE.local.md"), "skip", ["w"]);
     expect(plan.composable).toBeUndefined();
   });
 

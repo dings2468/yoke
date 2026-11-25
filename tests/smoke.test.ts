@@ -5,7 +5,6 @@ const modules = [
   "../src/core/schema.js",
   "../src/core/scopes.js",
   "../src/core/drift.js",
-  "../src/core/compiler.js",
   "../src/core/git.js",
   "../src/core/fs-safe.js",
   "../src/adapters/base.js",

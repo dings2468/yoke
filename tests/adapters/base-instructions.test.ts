@@ -7,13 +7,13 @@ import {
   planInstructionLink,
   planInstructionRemoval,
 } from "../../src/adapters/base.js";
-import { GENERATED_HEADER } from "../../src/core/compiler.js";
 import {
   ConcurrentModificationError,
   createNodeFs,
   type Fs,
   toReadFs,
 } from "../../src/core/fs-safe.js";
+import { GENERATED_HEADER } from "../../src/core/instructions.js";
 import {
   cleanupSandbox,
   makeAdapterContext,
