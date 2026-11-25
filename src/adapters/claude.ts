@@ -5,7 +5,13 @@
  * goes through an injected ReadFs, and nothing here touches the disk, the environment, or the clock beyond `env`.
  */
 import { isAbsolute, join } from "node:path";
-import { isNotFound, type ReadFs, readJsonIfExists, toReadFs } from "../core/fs-safe.js";
+import {
+  isNotFound,
+  type ReadFs,
+  readJsonIfExists,
+  readTextIfExists,
+  toReadFs,
+} from "../core/fs-safe.js";
 import type { Env, ExecResult } from "../core/git.js";
 import { findConditionalTags, hasGeneratedHeader } from "../core/instructions.js";
 import {
@@ -52,6 +58,10 @@ import {
 } from "./base.js";
 
 export const CLAUDE_NAME = "claude";
+
+/** The one line Claude needs at the top of a user-written CLAUDE.md to load the shared AGENTS.md. */
+const CLAUDE_IMPORT_LINE = "@AGENTS.md";
+const BOM = "﻿";
 /** Lock list id for Claude's per-project disable list of user-scope servers (decision D7). */
 export const DISABLED_SERVERS_LIST = "disabled-servers";
 
@@ -711,6 +721,31 @@ async function claudeImportPlan(
 }
 
 /**
+ * Doctor advice: a user-written project CLAUDE.md whose first non-empty line is not exactly `@AGENTS.md` means Claude
+ * will not load AGENTS.md. Read-only: it uses only the injected read handle.
+ */
+export async function claudeDoctorWarnings(
+  fs: ReadFs,
+  repoPath: string,
+): Promise<readonly string[]> {
+  const text = await readTextIfExists(fs, join(repoPath, "CLAUDE.md"));
+  if (text === undefined) {
+    return [];
+  }
+  const body = text.startsWith(BOM) ? text.slice(BOM.length) : text;
+  const first = body
+    .split(/\r?\n/)
+    .map((line) => line.trimEnd())
+    .find((line) => line.trim() !== "");
+  if (first === CLAUDE_IMPORT_LINE) {
+    return [];
+  }
+  return [
+    "CLAUDE.md does not start with @AGENTS.md, so Claude will not load AGENTS.md while this file exists; add `@AGENTS.md` as its first line",
+  ];
+}
+
+/**
  * Plans Claude's instruction files (decisions 3, 6-8). User scope links CLAUDE.md to the canonical user AGENTS.md. Project
  * and local scope write no file: a yoke-generated CLAUDE.md or CLAUDE.local.md is removed with a backup, and a user-written
  * CLAUDE.md gets a warning when it does not import AGENTS.md. Legacy tags in AGENTS.md get a warning.
@@ -835,6 +870,7 @@ export function createClaudeAdapter(ctx: AdapterContext): HarnessAdapter {
     detect: () => detectClaude(readCtx),
     readNativeState: (repoPath) => readClaudeNativeState(readCtx, repoPath),
     syncStatic: (config, opts) => planClaudeSync(readCtx, config, opts),
+    doctorWarnings: (p) => claudeDoctorWarnings(readCtx.fs, p.repoPath),
   };
 }
 
