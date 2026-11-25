@@ -119,7 +119,8 @@ export type ExpectedTarget =
   | {
       readonly kind: "instructions";
       readonly scope: Scope;
-      readonly instructions: NativeInstructions;
+      /** null = the instruction file is absent after the plan. */
+      readonly instructions: NativeInstructions | null;
     }
   | {
       readonly kind: "owned-names";
@@ -132,7 +133,8 @@ export type ExpectedTarget =
 export interface DesiredScopeState {
   /** undefined = MCPs of this scope are not managed (not compared, not hashed). */
   readonly mcps?: Readonly<Record<string, McpServerDefinition>>;
-  readonly instructions?: NativeInstructions;
+  /** undefined = instructions are not managed; null = the instruction file is absent. */
+  readonly instructions?: NativeInstructions | null;
   readonly ownedNames?: Readonly<Record<string, readonly string[]>>;
 }
 
@@ -143,7 +145,7 @@ export interface DesiredScopeState {
 /** Desired state of one scope, with the duplicate-key checks applied while grouping. */
 interface MutableScopeGroup {
   mcps?: Map<string, McpServerDefinition>;
-  instructions?: NativeInstructions;
+  instructions?: NativeInstructions | null;
   ownedNames?: Map<string, readonly string[]>;
 }
 
@@ -219,7 +221,9 @@ export function stateEntryFor(desired: DesiredScopeState): StateEntry {
       .map(([name, def]): [string, string] => [name, hashMcp(def)]),
   );
   const instructionsHash =
-    desired.instructions === undefined ? null : hashInstructions(desired.instructions);
+    desired.instructions === undefined || desired.instructions === null
+      ? null
+      : hashInstructions(desired.instructions);
   const lists = Object.entries(desired.ownedNames ?? {})
     .filter(([, names]) => names.length > 0)
     .sort(([a], [b]) => compareCodeUnits(a, b))
@@ -273,9 +277,11 @@ export interface McpDriftEntry {
 
 export interface InstructionsDriftEntry {
   readonly status: EntryStatus;
+  /** From the desired target, else the native one. */
   readonly path: string;
   readonly native: NativeInstructions | undefined;
-  readonly desired: NativeInstructions;
+  /** null = the desired state is an absent instruction file. */
+  readonly desired: NativeInstructions | null;
 }
 
 export interface ScopeDriftInput {
@@ -330,12 +336,16 @@ export function diffScope(input: ScopeDriftInput): ScopeDriftReport {
   if (input.desired.instructions !== undefined) {
     const desired = input.desired.instructions;
     const native = input.native?.instructions;
-    const status = classifyEntry({
-      native: native === undefined ? undefined : hashInstructions(native),
-      lock: input.lock?.instructionsHash ?? undefined,
-      desired: hashInstructions(desired),
-    });
-    instructions = { status, path: desired.path, native, desired };
+    const path = desired?.path ?? native?.path;
+    // Absent on both sides: nothing is written and nothing is on disk, so there is no entry to report.
+    if (path !== undefined) {
+      const status = classifyEntry({
+        native: native === undefined ? undefined : hashInstructions(native),
+        lock: input.lock?.instructionsHash ?? undefined,
+        desired: desired === null ? undefined : hashInstructions(desired),
+      });
+      instructions = { status, path, native, desired };
+    }
   }
 
   const hasDrift =
