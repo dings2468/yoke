@@ -25,15 +25,17 @@ Read `SPEC.md` before making architectural changes. `SPEC.md` is the source of t
   backlog task list --plain                      # filter: --status "To Do" --labels bug
   backlog search "query" --plain
   backlog task view TASK-1 --plain
-  backlog task create "Title" -d "Context" --type bug --ac "Criterion" -m v0.2
+  backlog decision list --plain
+  backlog task create "Title" -d "Context" --type bug -l standard --ac "Criterion" -m v0.2
   backlog task edit TASK-1 -s "In Progress"      # statuses: To Do, In Progress, Done
   ```
+- **Kanban:** follow CONTRIBUTING.md "Kanban workflow" (WIP limit 2 In Progress, one class-of-service label per task, Definition of Done).
 - Run `backlog instructions overview` once per session, and `backlog <command> --help` for anything else; do not copy Backlog.md's docs here.
 - **Fits the fixed workflow above:** the main agent picks and updates tasks; a task's plan comes from the planning subagent, and implementation starts only after it. Task file changes are committed on the task branch like any other change.
 - Do not run `backlog init`, `backlog agents`, or MCP setup in this repo: `AGENTS.md` stays the single instruction source and no MCP config is written.
 
 ## Branches, PRs, and Releases
-- Follow [CONTRIBUTING.md](CONTRIBUTING.md) for branch names, commit and PR titles, and the verification checklist.
+- Follow [CONTRIBUTING.md](CONTRIBUTING.md) for branch names, commit and PR titles, and the Definition of Done.
 - Only the maintainer creates tags, GitHub Releases, `release/*` branches, and merges PRs (CONTRIBUTING.md, "Maintainer only"). Agents prepare the branch and PR; they do not publish.
 
 ## Architecture Rules
