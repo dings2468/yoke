@@ -18,6 +18,20 @@ Read `SPEC.md` before making architectural changes. `SPEC.md` is the source of t
 - **Implementation:** done by Haiku subagents, and only after a plan exists. Do not start implementation without a plan.
 - The main agent coordinates, reviews results, and runs verification (`npm run typecheck`, `npm test`, `npm run check`).
 
+## Task Tracking (Backlog.md)
+- **Source of planned work:** tasks live in `backlog/` (config in `backlog/config.yml`) and are managed with the globally installed `backlog` CLI (installed by `.devcontainer/install-backlog.sh`). Search for an existing task before creating one; skip tasks for questions and trivial mechanical edits.
+- **Use the CLI, never edit task files by hand:**
+  ```bash
+  backlog task list --plain                      # filter: --status "To Do" --labels bug
+  backlog search "query" --plain
+  backlog task view TASK-1 --plain
+  backlog task create "Title" -d "Context" --type bug --ac "Criterion" -m v0.2
+  backlog task edit TASK-1 -s "In Progress"      # statuses: To Do, In Progress, Done
+  ```
+- Run `backlog instructions overview` once per session, and `backlog <command> --help` for anything else; do not copy Backlog.md's docs here.
+- **Fits the fixed workflow above:** the main agent picks and updates tasks; a task's plan comes from the planning subagent, and implementation starts only after it. Task file changes are committed on the task branch like any other change.
+- Do not run `backlog init`, `backlog agents`, or MCP setup in this repo: `AGENTS.md` stays the single instruction source and no MCP config is written.
+
 ## Architecture Rules
 1. **Strict Adapter Isolation:** Harness-specific paths, JSON keys (Claude `type: "http"` + `url` vs. agy `url` only, where `serverUrl` is accepted as a legacy alias on read), and session parsers belong **exclusively** inside `src/adapters/<harness>.ts`. Never branch on harness names (`if (name === "claude")`) inside `src/core/` or `src/commands/`.
 2. **Capability-Driven Core:** Every adapter must implement `HarnessAdapter` and declare `HarnessCapabilities` (`src/adapters/base.ts`). Commands must check capabilities before invoking optional methods (`exportLatestSession`, `importAndLaunch`) and degrade gracefully. Note: agy does not support legacy HTTP+SSE, so `transport: sse` servers are skipped for agy with a warning. agy also has no v0.1 project-level MCP config, so project and local MCP servers are skipped for agy with a warning and never written to the global file.
