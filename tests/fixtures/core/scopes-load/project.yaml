@@ -1,0 +1,6 @@
+version: 1
+mode: hybrid
+mcps:
+  search:
+    transport: http
+    url: "${SEARCH_HOST}/mcp"

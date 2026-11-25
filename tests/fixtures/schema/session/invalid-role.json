@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "id": "bad-role",
+  "createdAt": "2026-11-24T10:00:00Z",
+  "sourceHarness": "claude",
+  "repoPath": "/workspaces/example",
+  "git": {
+    "branch": "main",
+    "statusShort": "",
+    "diffStat": ""
+  },
+  "turns": [{ "role": "system", "content": "You are a helpful assistant." }]
+}

@@ -1,0 +1,8 @@
+version: 1
+mcps:
+  github:
+    enabled: false
+  filesystem:
+    transport: stdio
+    command: npx
+    args: ["-y", "@modelcontextprotocol/server-filesystem", "./docs"]

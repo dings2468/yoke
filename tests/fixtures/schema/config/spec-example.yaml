@@ -1,0 +1,29 @@
+version: 1
+mode: compiled # compiled | hybrid
+harnesses:
+  - claude
+  - agy
+
+mcps:
+  # Local stdio server
+  filesystem:
+    transport: stdio
+    command: npx
+    args: ["-y", "@modelcontextprotocol/server-filesystem", "."]
+    env:
+      LOG_LEVEL: info
+
+  # Remote server (http, or sse where the harness supports it)
+  linear:
+    transport: http # http | sse
+    url: https://mcp.linear.app/mcp
+    headers:
+      Authorization: "Bearer ${LINEAR_API_KEY}"
+
+  # Disable an inherited user-level MCP in this project
+  github:
+    enabled: false
+
+session:
+  maxTurns: 40
+  includeGitDiffStat: true

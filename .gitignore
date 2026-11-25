@@ -1,0 +1,16 @@
+# dependencies / build output
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+
+# yoke runtime state (SPEC §3, §4.3, §4.4)
+.yoke/
+yoke.local.yaml
+CLAUDE.local.md
+.env
+.env.local
+
+# editors / OS
+.DS_Store
+*.log

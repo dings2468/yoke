@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "mode": "compiled",
+  "harnesses": [],
+  "mcps": {
+    "filesystem": {
+      "transport": "stdio",
+      "command": "npx",
+      "enabled": true,
+      "scopes": []
+    }
+  },
+  "session": { "maxTurns": 40, "includeGitDiffStat": true },
+  "layers": {}
+}

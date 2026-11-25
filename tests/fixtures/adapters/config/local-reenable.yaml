@@ -1,0 +1,6 @@
+version: 1
+mcps:
+  github:
+    transport: stdio
+    command: gh
+    enabled: true

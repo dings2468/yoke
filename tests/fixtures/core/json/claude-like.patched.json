@@ -1,0 +1,24 @@
+{
+  "numStartups": 3,
+  "10": "x",
+  "projects": {
+    "/repo": {
+      "allowedTools": []
+    }
+  },
+  "mcpServers": {
+    "alpha": {
+      "type": "stdio",
+      "command": "alpha-cmd",
+      "args": []
+    },
+    "beta": {
+      "type": "http",
+      "url": "https://example.test/mcp"
+    }
+  },
+  "oauthAccount": {
+    "accountUuid": "00000000-0000-0000-0000-000000000000",
+    "emailAddress": "user@example.test"
+  }
+}

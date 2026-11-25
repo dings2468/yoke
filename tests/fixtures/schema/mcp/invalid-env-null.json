@@ -1,0 +1,9 @@
+{
+  "x": {
+    "transport": "stdio",
+    "command": "node",
+    "env": {
+      "KEY": null
+    }
+  }
+}

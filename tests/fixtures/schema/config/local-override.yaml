@@ -1,0 +1,7 @@
+version: 1
+mcps:
+  github:
+    enabled: false
+  filesystem:
+    env:
+      LOG_LEVEL: debug

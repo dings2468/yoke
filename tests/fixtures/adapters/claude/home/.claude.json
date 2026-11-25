@@ -1,0 +1,54 @@
+{
+  "numStartups": 7,
+  "10": "x",
+  "tipsHistory": "a } and \"mcpServers\" inside",
+  "projects": {
+    "__REPO__": {
+      "allowedTools": [],
+      "mcpServers": {
+        "native-local": {
+          "type": "stdio",
+          "command": "nl"
+        }
+      },
+      "enabledMcpjsonServers": ["fs"],
+      "disabledMcpjsonServers": [],
+      "disabledMcpServers": ["other"],
+      "hasTrustDialogAccepted": true
+    },
+    "/other/repo": {
+      "mcpServers": {
+        "x": {
+          "type": "stdio",
+          "command": "x"
+        }
+      }
+    }
+  },
+  "mcpServers": {
+    "old": {
+      "type": "stdio",
+      "command": "old",
+      "env": {
+        "TOKEN": "${OLD_TOKEN}"
+      }
+    },
+    "oauthy": {
+      "type": "http",
+      "url": "https://o.test/mcp",
+      "oauth": {
+        "clientId": "abc",
+        "callbackPort": 8123
+      },
+      "timeout": 5
+    },
+    "wsy": {
+      "type": "ws",
+      "url": "ws://w.test"
+    }
+  },
+  "oauthAccount": {
+    "emailAddress": "dev@example.test"
+  },
+  "zeta": "ünïcode"
+}

@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "bad": {
+      "type": "stdio",
+      "command": "bad",
+      "env": {
+        "PORT": 8080
+      }
+    }
+  }
+}

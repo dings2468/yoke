@@ -1,0 +1,28 @@
+version: 1
+harnesses:
+  - example-harness
+mcps:
+  github:
+    transport: stdio
+    command: npx
+    args: ["-y", "github-server"]
+    env:
+      GITHUB_REGION: us
+  filesystem:
+    transport: stdio
+    command: npx
+    args: ["-y", "fs-server", "."]
+    env:
+      LOG_LEVEL: info
+      ROOT: /home/user
+  search:
+    transport: stdio
+    command: search-cli
+    args: ["--index", "main"]
+  linear:
+    transport: http
+    url: https://mcp.linear.app/mcp
+    headers:
+      Authorization: "Bearer ${LINEAR_API_KEY}"
+session:
+  maxTurns: 10

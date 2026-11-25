@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "mode": "compiled",
+  "harnesses": [],
+  "mcps": {
+    "github": { "enabled": false }
+  },
+  "session": { "maxTurns": 40, "includeGitDiffStat": true },
+  "layers": {}
+}

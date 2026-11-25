@@ -1,0 +1,16 @@
+# Keep build contexts small and free of host state (see docker/sandbox/README.md).
+.git
+node_modules
+dist
+coverage
+*.tsbuildinfo
+.yoke
+yoke.local.yaml
+.env
+.env.*
+.devcontainer
+CLAUDE.local.md
+.npmrc
+*.pem
+.claude/settings.local.json
+*.log

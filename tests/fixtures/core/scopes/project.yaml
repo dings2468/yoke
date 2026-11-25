@@ -1,0 +1,12 @@
+version: 1
+mode: hybrid
+mcps:
+  github:
+    enabled: false
+  search:
+    transport: http
+    url: "${SEARCH_HOST}/mcp"
+  ghost:
+    enabled: false
+session:
+  includeGitDiffStat: false

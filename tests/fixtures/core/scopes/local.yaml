@@ -1,0 +1,15 @@
+version: 1
+harnesses: []
+mcps:
+  github:
+    transport: stdio
+    command: npx
+    args: ["-y", "github-server", "--read-only"]
+    env:
+      GITHUB_TOKEN: "${GITHUB_TOKEN}"
+  filesystem:
+    transport: stdio
+    command: npx
+    args: ["-y", "fs-server", "/srv"]
+    env:
+      LOG_LEVEL: debug

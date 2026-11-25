@@ -1,0 +1,12 @@
+{
+	"name": "yoke sandbox",
+	"build": {
+		"dockerfile": "../../docker/sandbox/Dockerfile",
+		"context": "../.."
+	},
+	"remoteUser": "tester",
+	"updateRemoteUserUID": false,
+	// Keep the sandbox isolated: an anonymous volume instead of the host repo bind mount.
+	"workspaceMount": "type=volume,target=/home/tester/work",
+	"workspaceFolder": "/home/tester/work"
+}

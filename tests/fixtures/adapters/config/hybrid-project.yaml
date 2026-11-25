@@ -1,0 +1,9 @@
+version: 1
+mode: hybrid
+harnesses: [claude, agy]
+mcps:
+  pg:
+    transport: stdio
+    command: pg
+  github:
+    enabled: false
