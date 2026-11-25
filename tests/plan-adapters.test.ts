@@ -4,12 +4,14 @@
  * Every path lives in a temp sandbox (fake home, repo, and XDG config). The real ~/.claude.json and ~/.gemini are never
  * read or written, and exec is a scripted fake that returns nothing.
  */
-import { readdir, readFile, stat, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { type AgyPaths, agyPaths, createAgyAdapter } from "../src/adapters/agy.js";
 import { claudePaths, createClaudeAdapter } from "../src/adapters/claude.js";
+import { hashInstructions } from "../src/core/drift.js";
 import { createNodeFs } from "../src/core/fs-safe.js";
+import { GENERATED_HEADER } from "../src/core/instructions.js";
 import {
   type AdapterFactory,
   buildSyncPlan,
@@ -20,12 +22,14 @@ import {
   readLock,
   type SyncPlan,
   scopesForFlags,
+  serializeLock,
 } from "../src/core/plan.js";
 import { stateKey } from "../src/core/schema.js";
 import {
   cleanupSandbox,
   copyFixture,
   fakeExec,
+  lockFrom,
   type Sandbox,
   setupAdapterSandbox,
 } from "./adapters/helpers.js";
@@ -245,5 +249,61 @@ describe("sync planning with the real adapters", () => {
     expect(result.status).toBe("applied");
     expect(await readdir(sb.repo)).toEqual([]);
     expect(await readFile(claudePaths(sb.home, {}, sb.repo).userConfig, "utf8")).not.toBe("");
+  });
+});
+
+describe("gated removal of an edited generated CLAUDE.md", () => {
+  /** Every file under `dir`, as [relative path, content] pairs. */
+  async function filesUnder(dir: string): Promise<[string, string][]> {
+    const names = await readdir(dir, { recursive: true });
+    const out: [string, string][] = [];
+    for (const name of names) {
+      const full = join(dir, name);
+      const info = await stat(full);
+      if (info.isFile()) out.push([name, await readFile(full, "utf8")]);
+    }
+    return out;
+  }
+
+  it("blocks the sync with a drift gate, and with force removes the file and writes a backup", async () => {
+    const sb = await newSandbox();
+    await seed(sb);
+    const claudeMd = join(sb.repo, "CLAUDE.md");
+    const original = `${GENERATED_HEADER}\n\n# Generated\n`;
+    const edited = `${original}Hand edit\n`;
+    const scopes = scopesForFlags({ global: false, all: false });
+
+    // The repo lock records the hash of the file as yoke wrote it; the user then edits the file.
+    await writeFile(claudeMd, original, "utf8");
+    const paths = lockPaths({ repoPath: sb.repo, userConfigDir: sb.userConfigDir });
+    await mkdir(dirname(paths.repo), { recursive: true });
+    const lock = lockFrom({
+      [stateKey("claude", "project")]: {
+        mcpHashes: {},
+        instructionsHash: hashInstructions({ kind: "file", path: claudeMd, content: original }),
+      },
+    });
+    await writeFile(paths.repo, serializeLock(lock), "utf8");
+    await writeFile(claudeMd, edited, "utf8");
+
+    const gated = await buildSyncPlan(requestFor(sb, { scopes }));
+    expect(gated.blocked).toBe(true);
+    expect(gated.gate.some((g) => g.kind === "drift")).toBe(true);
+    expect(gated.drift.hasDrift).toBe(true);
+
+    const refused = await executePlan({ plan: gated, fs: createNodeFs(), now });
+    expect(refused.status).toBe("refused");
+    expect(await readFile(claudeMd, "utf8")).toBe(edited);
+
+    const forced = await buildSyncPlan(requestFor(sb, { scopes, force: true }));
+    expect(forced.blocked).toBe(false);
+    expect(forced.gate.some((g) => g.kind === "drift")).toBe(true);
+
+    const result = await executePlan({ plan: forced, fs: createNodeFs(), now });
+    expect(result.status).toBe("applied");
+    expect(await pathExists(claudeMd)).toBe(false);
+    if (result.backupDir === undefined) throw new Error("forced removal wrote no backup directory");
+    const backedUp = await filesUnder(result.backupDir);
+    expect(backedUp.some(([, content]) => content === edited)).toBe(true);
   });
 });
