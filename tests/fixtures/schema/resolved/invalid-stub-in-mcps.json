@@ -5,7 +5,6 @@
   "mcps": {
     "github": { "enabled": false }
   },
-  "instructions": { "source": "AGENTS.md", "preferSymlink": true },
   "session": { "maxTurns": 40, "includeGitDiffStat": true },
   "layers": {}
 }

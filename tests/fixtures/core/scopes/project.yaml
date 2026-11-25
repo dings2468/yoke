@@ -8,7 +8,5 @@ mcps:
     url: "${SEARCH_HOST}/mcp"
   ghost:
     enabled: false
-instructions:
-  preferSymlink: false
 session:
   includeGitDiffStat: false

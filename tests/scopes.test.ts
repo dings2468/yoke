@@ -33,7 +33,6 @@ describe("resolveConfig: scope merge (SPEC 3.1)", () => {
       mode: "compiled",
       harnesses: [],
       mcps: {},
-      instructions: { source: resolve(REPO_DIR, "AGENTS.md"), preferSymlink: true },
       session: { maxTurns: 40, includeGitDiffStat: true },
       layers: {},
     });
@@ -174,16 +173,12 @@ describe("resolveConfig: scope merge (SPEC 3.1)", () => {
     expect(withLocal.harnesses).toEqual([]);
   });
 
-  it("resolves a user-scope instructions.source against the user directory", () => {
+  it("merges user and project mode and session values", () => {
     const warn = vi.fn();
     const result = resolveConfig(
       { user: load("user"), project: load("project") },
       { projectDir: REPO_DIR, warn },
     );
-    expect(result.instructions).toEqual({
-      source: resolve(USER_DIR, "rules.md"),
-      preferSymlink: false,
-    });
     expect(result.mode).toBe("hybrid");
     expect(result.session).toEqual({ maxTurns: 10, includeGitDiffStat: false });
   });
