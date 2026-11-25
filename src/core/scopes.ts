@@ -1,6 +1,23 @@
 /**
- * src/core/scopes.ts — 3-tier scope merge (SPEC §3.1, §4.1). Pure: no I/O, no environment reads, no clock.
+ * src/core/scopes.ts — 3-tier scope merge. Pure: no I/O, no environment reads, no clock.
  * Inputs are already-parsed, already-validated scope files; loading them is a separate step.
+ *
+ * Precedence is strictly local > project > user. `<userConfigDir>` is `$XDG_CONFIG_HOME/yoke` when
+ * XDG_CONFIG_HOME is an absolute path, otherwise `~/.config/yoke`. An empty or comment-only scope file is rejected
+ * (parseScopeConfig); every scope file needs at least `version: 1`.
+ *
+ * Merge rules, applied when the same MCP server name appears in more than one scope, in precedence order:
+ * - Maps (`env`, `headers`) merge field by field; higher-precedence keys win.
+ * - Arrays (`args`) are replaced whole, never concatenated.
+ * - A change of `transport` replaces the whole server entry; no fields are inherited from the lower scope.
+ * - `enabled: false` with no `transport` is not a transport change. It is a stub that suppresses the inherited entry.
+ * - `enabled` across a redefinition: a same-transport override that omits `enabled` keeps the inherited value, so a
+ *   disabled server stays disabled. A transport change resets `enabled` to true unless the override sets it.
+ * - Non-MCP keys (`mode`, `session`, and so on) take the value from the highest scope that sets them. `harnesses`
+ *   is replaced whole, never merged.
+ * - Full definitions only: every non-stub entry must be a complete definition with a `transport`. Partial overrides
+ *   of a lower-scope server (for example, only `env` in yoke.local.yaml) are not valid.
+ * - Whether `null` should later remove an inherited field is an open item (decision-5); YAML `null` is rejected in v0.1.
  */
 import { dirname, isAbsolute, join } from "node:path";
 import { parse as parseYaml } from "yaml";
@@ -60,7 +77,7 @@ function mergeMaps(
   return { ...lower, ...higher };
 }
 
-/** Merge two full definitions that share a transport (SPEC §3.1). Returns a fresh object. */
+/** Merge two full definitions that share a transport. Returns a fresh object. */
 function mergeSameTransport(
   lower: McpServerDefinition,
   higher: McpServerDefinition,
@@ -165,7 +182,7 @@ export function mergeMcpServers(
   );
 }
 
-/** Merge all scopes into the effective config. Defaults come from createYokeDefaults(). */
+/** Merge all scopes into the effective config, local > project > user. Defaults come from createYokeDefaults(); merge rules are in the file header. */
 export function resolveConfig(inputs: ScopeInputs, opts: ResolveOptions): ResolvedYokeConfig {
   if (!isAbsolute(opts.projectDir)) {
     throw new Error(`projectDir must be an absolute path: ${opts.projectDir}`);

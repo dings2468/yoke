@@ -5,6 +5,25 @@
  * only after the drift gate has been checked. There is no preview flag: a preview is a
  * plan that is built and never executed. Harness-specific behavior lives in adapters,
  * which reach this module through `SyncRequest.adapters`.
+ *
+ * Planning (buildSyncPlan) is the single planning path. It validates the request, loads and merges the scope files,
+ * loads the lock files (`<repo>/.yoke/yoke.lock` for project and local; `<userConfigDir>/yoke.lock` for user),
+ * constructs each configured adapter, calls syncStatic, checks that no two non-composable plans share a path
+ * (PlanConflictError), runs the three-way drift check, and returns a SyncPlan. It reads only and takes no clock.
+ *
+ * Gate: the gate collects reasons: `drift` (native changes since the last sync), `lock-corrupt`, and
+ * `drift-unchecked` (a harness that cannot be reverse-read). The plan is blocked when there are reasons and the run
+ * is not forced.
+ *
+ * executePlan decides the gate first: it is clear when there are no reasons, forced under `--force`, and otherwise
+ * `confirm` decides. `confirm` is present only in interactive runs; when absent, the gate refuses. A refused gate
+ * returns before any write. Otherwise every non-noop plan is applied in order with one backup session, and then the
+ * lock files are written last, each atomically and each backed up first when it already exists. A throwing apply
+ * stops the run, writes no lock, and returns status "failed". An instructions plan that reports "fallback" keeps the
+ * previous lock value. SyncResult.status is "applied", "refused", or "failed".
+ *
+ * Scopes per command: `sync` plans project and local; `--global` plans user only; `--all` plans all three. `--global`
+ * combined with `--all` is a SyncRequestError, which the CLI maps to a usage error.
  */
 import { isAbsolute, join } from "node:path";
 import type {
@@ -370,7 +389,7 @@ function sortedEntries(map: ReadonlyMap<string, StateEntry>): YokeStateLock["har
   return Object.fromEntries(sorted);
 }
 
-/** D5 `changed`: ok compares canonical JSON; corrupt always changes; missing changes only when entries exist. */
+/** `changed`: ok compares canonical JSON; corrupt always changes; missing changes only when entries exist. */
 function lockChanged(previous: LockLoad, entries: YokeStateLock["harnesses"]): boolean {
   switch (previous.status) {
     case "ok":
@@ -383,7 +402,7 @@ function lockChanged(previous: LockLoad, entries: YokeStateLock["harnesses"]): b
 }
 
 /**
- * D6: throws PlanConflictError when a path has more than one non-noop plan, unless all of them come from one
+ * Throws PlanConflictError when a path has more than one non-noop plan, unless all of them come from one
  * harness and are all composable. Noop plans never conflict.
  */
 export function checkPathConflicts(changes: readonly PlannedChange[]): void {
@@ -406,7 +425,7 @@ export function checkPathConflicts(changes: readonly PlannedChange[]): void {
   }
 }
 
-/** D7: flatten the groups in order, dropping exact duplicates and keeping the first occurrence. */
+/** Flatten the groups in order, dropping exact duplicates and keeping the first occurrence. */
 export function collectWarnings(groups: readonly (readonly string[])[]): string[] {
   return [...new Set(groups.flat())];
 }
@@ -433,7 +452,7 @@ export function mergedLockView(loads: readonly LockLoad[]): YokeStateLock | unde
 }
 
 /**
- * D5: starts from the previous ok entries, then for each processed key sets stateEntryFor(desired), or deletes the key
+ * Starts from the previous ok entries, then for each processed key sets stateEntryFor(desired), or deletes the key
  * when it has no desired state. Keys outside `processed` are kept as they were. Keys are sorted.
  */
 export function computeLockUpdate(input: {
@@ -463,7 +482,7 @@ export function computeLockUpdate(input: {
 }
 
 /**
- * D5: for each fallen instructions target, the entry's instructionsHash is restored from the previous lock entry
+ * For each fallen instructions target, the entry's instructionsHash is restored from the previous lock entry (decision-16)
  * (null when there is none). Other target kinds and keys without an entry in the update are left alone.
  */
 export function carryOverFallbacks(
@@ -505,7 +524,7 @@ function lockEntryFor(
 /**
  * Plans a sync without writing anything. Reads go through `req.readFs` only; no `Fs` is ever used here, and no
  * clock is read. Throws SyncRequestError, ScopeConfigError, NativeStateError, FsSafeError, PlanConflictError, or a
- * plain Error from an adapter when its input is malformed. Warnings are one deduplicated list (D7).
+ * plain Error from an adapter when its input is malformed. Warnings are one deduplicated list.
  */
 export async function buildSyncPlan(req: PlanRequest): Promise<SyncPlan> {
   validateRequest(req);
@@ -660,7 +679,7 @@ export async function buildSyncPlan(req: PlanRequest): Promise<SyncPlan> {
 
 // #region P7 executePlan
 /**
- * D3: the drift gate. Clear when there are no reasons; forced when the plan is forced; otherwise `confirm` decides.
+ * The drift gate. Clear when there are no reasons; forced when the plan is forced; otherwise `confirm` decides.
  * `confirm` is called at most once, and only when there are reasons and the plan is not forced.
  */
 export async function decideGate(

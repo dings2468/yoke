@@ -1,5 +1,5 @@
 /**
- * src/core/git.ts — git helpers with an injected exec (SPEC.md §9).
+ * src/core/git.ts — git helpers with an injected exec.
  *
  * Only this module imports `node:child_process`. Every helper takes a `GitContext`
  * whose `exec` is injected, so tests can script git output without a real repository.

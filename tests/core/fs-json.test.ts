@@ -148,7 +148,7 @@ describe("commitJsonPatch zero-clobber", () => {
   });
 });
 
-describe("commitJsonPatch rebase (D7)", () => {
+describe("commitJsonPatch rebase", () => {
   it("re-patches the key on the current text when the file changed after planning", async () => {
     const path = join(dir, "app.json");
     await writeFile(path, await fixture("claude-like.json"));

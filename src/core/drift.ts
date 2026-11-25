@@ -1,6 +1,19 @@
 /**
- * src/core/drift.ts — canonical hashing (SPEC §4.3) and desired-state types for drift checks (SPEC §5).
+ * src/core/drift.ts — canonical hashing for the lock files and the desired-state types for the three-way drift check.
  * Pure functions only: no file I/O, no process state, no clock, no home directory.
+ *
+ * Hash format: lowercase hex sha256 with no `sha256:` prefix (64 characters). The hashed input is the sorted-key
+ * canonical JSON of the value: keys sorted recursively, array order kept, no whitespace, `undefined`-valued keys
+ * omitted, UTF-8. Symlinked instructions are hashed as `{kind:"symlink",target}` and files as `{kind:"file",content}`
+ * (decision-12), so editing AGENTS.md behind an instruction-file symlink is not drift.
+ *
+ * Three-way drift check (run before yoke overwrites native files):
+ * 1. Reverse-read: the source adapter's readNativeState parses the harness's current native MCPs and instructions
+ *    back into canonical form.
+ * 2. Diff against the lock: any server or instruction block whose hash differs from the last-synced hash is flagged
+ *    as a native mutation. This module only detects and reports; the gate in plan.ts decides what happens next.
+ * 3. Prompt (v0.1): the user chooses between overwriting with the yoke config and aborting. Non-interactive runs
+ *    abort unless `--force` is passed. The original file is backed up before any overwrite (AGENTS.md invariant 2).
  */
 import { createHash } from "node:crypto";
 import type {
@@ -91,7 +104,7 @@ export function normalizeMcp(def: McpServerDefinition): McpServerDefinition {
   }
 }
 
-/** sha256 of the canonical JSON of the normalized MCP definition (SPEC §4.3). */
+/** sha256 of the canonical JSON of the normalized MCP definition. */
 export function hashMcp(def: McpServerDefinition): string {
   return sha256Hex(canonicalJson(normalizeMcp(def)));
 }
@@ -158,7 +171,7 @@ function sortedUnion(lists: readonly (readonly string[])[]): string[] {
 }
 
 /**
- * Group a plan's expected targets into desired state per scope (D5). Several `mcps` targets of one scope are merged;
+ * Group a plan's expected targets into desired state per scope. Several `mcps` targets of one scope are merged;
  * a server name repeated in one scope throws. A second instructions target or a repeated owned-names list throws.
  */
 export function groupExpected(
@@ -211,7 +224,7 @@ export function groupExpected(
 }
 
 /**
- * Lock entry for one scope, as written after a sync (SPEC §4.3). `ownedNames` appears only when some list is non-empty;
+ * Lock entry for one scope, as written after a sync. `ownedNames` appears only when some list is non-empty;
  * names and list ids are sorted and empty lists are left out.
  */
 export function stateEntryFor(desired: DesiredScopeState): StateEntry {
@@ -238,11 +251,11 @@ export function stateEntryFor(desired: DesiredScopeState): StateEntry {
 /** Drift status of one entry: `in-sync`/`stale` are clean; `create`, `added`, `modified`, `removed` are reported. */
 export type EntryStatus = "in-sync" | "stale" | "create" | "added" | "modified" | "removed";
 
-/** Statuses that count as drift (D5). */
+/** Statuses that count as drift. */
 export const DRIFT_STATUSES: readonly EntryStatus[] = ["added", "modified", "removed"];
 
 /**
- * Classify one entry from its hashes (D5 order). `native` is the hash of the file on disk, `lock` the hash recorded at
+ * Classify one entry from its hashes (checked in this order). `native` is the hash of the file on disk, `lock` the hash recorded at
  * the last sync, `desired` the hash of what yoke would write now. An absent hash means the item is missing.
  */
 export function classifyEntry(h: {
@@ -306,7 +319,7 @@ export interface DriftReport {
 }
 
 /**
- * Compare native, lock, and desired for one scope (SPEC §5 step 2, detect and report only). MCPs are compared only when
+ * Compare native, lock, and desired for one scope (detect and report only; the gate in plan.ts decides). MCPs are compared only when
  * `desired.mcps` is set; instructions only when `desired.instructions` is set. A `null` lock hash counts as absent.
  * `ownedNames` is bookkeeping and is never compared.
  */

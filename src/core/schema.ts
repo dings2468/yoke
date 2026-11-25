@@ -1,13 +1,43 @@
 /**
- * src/core/schema.ts — canonical Zod schemas (SPEC §4) and the types SPEC §6 references.
+ * src/core/schema.ts — canonical Zod schemas for yoke.yaml, the lock files and YokeSessionIR, plus the plain types adapters and commands share; these schemas are the contract and tests/schema/ is its executable spec.
  * Validation and type inference only: no merging, hashing, defaults, or I/O.
  * tsconfig keeps exactOptionalPropertyTypes OFF, so optional fields infer as `T | undefined`.
  * Consumers must treat an `undefined` value exactly like an absent key.
+ *
+ * yoke.yaml (YokeConfigSchema, one per scope file):
+ * - Strict objects: unknown keys are rejected in every file and nested object, which catches typos such as
+ *   `mcpServers:`. An older yoke therefore rejects files written by a newer one.
+ * - `version: 1` is required in every scope file, including yoke.local.yaml. All other top-level keys are optional.
+ * - Strings only: `env` and `headers` values must be YAML strings (`PORT: "8080"`); numbers and booleans are not
+ *   coerced. `env` keys match `^[A-Za-z_][A-Za-z0-9_]*$`. YAML `null` is rejected everywhere.
+ * - URLs must start with `http://`, `https://`, or a `${VAR}` reference, so `${MCP_HOST}/mcp` is valid.
+ * - Names: harness names match `^[a-z][a-z0-9-]{0,31}$` (no `:`, because they form the state key); MCP server names
+ *   match `^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$`. `harnesses` must not contain duplicates.
+ * - No `instructions:` key. Instruction paths are fixed (`<repo>/AGENTS.md` and `<userConfigDir>/AGENTS.md`), so an
+ *   `instructions:` key is rejected like any other unknown key.
+ * - `session.maxTurns` is a positive integer with no upper bound.
+ * - Defaults, applied after merge and never written: mode compiled, harnesses [], session.maxTurns 40,
+ *   session.includeGitDiffStat true.
+ *
+ * Lock files (YokeStateLockSchema): `.yoke/yoke.lock` (project) and `<userConfigDir>/yoke.lock` (user), both
+ * gitignored and sharing this schema. Keys are "<harness>:<scope>" (scope is user, project, or local); the field
+ * keeps the name `harnesses`. Hashes are lowercase hex sha256 with no `sha256:` prefix (64 characters). Only names in
+ * `ownedNames` are ever removed from a shared native list. `lastSyncedAt` is an ISO-8601 date-time.
+ *
+ * YokeSessionIRSchema limits: `id` matches `^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$` (it becomes a file name);
+ * `sourceHarness` is a harness name; `repoPath` is non-empty but not checked for being absolute; `branch` may be
+ * empty (detached or unborn HEAD); `turns` may be empty. Each `actions[].summary` is 1 to 300 characters and
+ * single-line. `content` has no length cap; the exporter enforces the lossy-but-clean rule instead. Objects are
+ * strict, so keys such as `thinking` or `signature` are rejected. Timestamps are ISO-8601 date-times.
+ *
+ * Session translation rules: strip cryptographic thinking/thought signatures, raw multi-hundred-line file reads,
+ * and verbose terminal logs. Preserve user intents, assistant decisions and plans, compact `actions[]` summaries,
+ * and live `git` state.
  */
 import { z } from "zod";
 
 // #region S0 primitives
-/** Ascending precedence: user < project < local (SPEC §3). */
+/** Ascending precedence: user < project < local. */
 export const SCOPES = ["user", "project", "local"] as const;
 export const ScopeSchema = z.enum(SCOPES);
 export type Scope = z.infer<typeof ScopeSchema>;
@@ -43,7 +73,7 @@ export const MCP_TRANSPORTS = ["stdio", "http", "sse"] as const;
 export const McpTransportSchema = z.enum(MCP_TRANSPORTS);
 export type McpTransport = z.infer<typeof McpTransportSchema>;
 
-/** Values stay verbatim; `${VAR}` references are never expanded (SPEC §8.4). Strings only, so YAML numbers must be quoted. */
+/** Values stay verbatim; `${VAR}` references are never expanded (AGENTS.md invariant 4). Strings only, so YAML numbers must be quoted. */
 export const EnvMapSchema = z.record(z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/), z.string());
 export type EnvMap = z.infer<typeof EnvMapSchema>;
 export const HeaderMapSchema = z.record(
@@ -91,7 +121,7 @@ export const McpServerDefinitionSchema = z.discriminatedUnion("transport", [
 ]);
 export type McpServerDefinition = z.infer<typeof McpServerDefinitionSchema>;
 
-/** `{ enabled: false }` with no transport: suppresses an inherited entry (SPEC §3.1). */
+/** `{ enabled: false }` with no transport: suppresses an inherited entry (merge rules: resolveConfig in scopes.ts). */
 export const McpDisabledStubSchema = z.strictObject({
   transport: z.undefined().optional(),
   enabled: z.literal(false),
@@ -174,7 +204,7 @@ export type ResolvedYokeConfig = z.infer<typeof ResolvedYokeConfigSchema>;
 
 export type YokeDefaults = Pick<ResolvedYokeConfig, "mode" | "harnesses" | "session">;
 
-/** Fresh object on each call, so no shared mutable defaults. Values: SPEC §3 (mode) and the SPEC §4.1 example. */
+/** Fresh object on each call, so no shared mutable defaults. Defaults, applied after merge and never written: mode compiled, harnesses [], session.maxTurns 40, session.includeGitDiffStat true. */
 export function createYokeDefaults(): YokeDefaults {
   return {
     mode: "compiled",
@@ -217,7 +247,7 @@ export type PartialYokeConfig = z.infer<typeof PartialYokeConfigSchema>;
 
 // #region S7 options
 /**
- * Options for HarnessAdapter.syncStatic (SPEC §6). Planning only; adapters never see dry-run or force.
+ * Options for HarnessAdapter.syncStatic . Planning only; adapters never see dry-run or force.
  * Plain interface, not a Zod schema: these are internal call arguments, not external input.
  */
 export interface SyncOptions {
@@ -226,20 +256,20 @@ export interface SyncOptions {
    */
   readonly repoPath: string;
   /**
-   * Native scopes to plan, in any order. Command mapping (SPEC §7):
+   * Native scopes to plan, in any order. Command mapping:
    * `yoke sync` -> ["project", "local"]; `--global` -> ["user"]; `--all` -> ["user", "project", "local"].
    * The lock is keyed `<harness>:<scope>` (S2), so the adapter must know which scopes it plans.
    */
   readonly scopes: readonly Scope[];
   /**
    * Non-fatal warnings (for example, a transport or scope a harness cannot represent). Must not throw.
-   * Adapters put warnings on FileChangePlan.warnings and do not call this; kept for SPEC §6 compatibility.
+   * Adapters put warnings on FileChangePlan.warnings and do not call this; kept for adapter-interface compatibility.
    */
   readonly warn: (message: string) => void;
 }
 
 /**
- * Options for HarnessAdapter.importAndLaunch (SPEC §6, §7 `yoke switch`).
+ * Options for HarnessAdapter.importAndLaunch (used by `yoke switch`, v0.2).
  * Plain interface, not a Zod schema: these are internal call arguments, not external input.
  */
 export interface LaunchOptions {
@@ -277,7 +307,7 @@ export type StateEntry = z.infer<typeof StateEntrySchema>;
 export const YokeStateLockSchema = z.strictObject({
   version: z.literal(1),
   lastSyncedAt: IsoDateTimeSchema,
-  /** Field name kept from SPEC §4.3; keys are StateKey, not bare harness names. */
+  /** Field name harnesses kept for lock version 1; keys are StateKey, not bare harness names. */
   harnesses: z.record(StateKeySchema, StateEntrySchema),
 });
 export type YokeStateLock = z.infer<typeof YokeStateLockSchema>;
