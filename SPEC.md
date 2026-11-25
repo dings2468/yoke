@@ -252,26 +252,57 @@ Every harness implements a single interface (`src/adapters/base.ts`) with an exp
 
 ```typescript
 export interface HarnessCapabilities {
-  staticMcp: boolean;
-  staticInstructions: boolean;
-  reverseRead: boolean; // Required for drift detection and init in v0.1, and for absorption in v0.2
-  sessionExport: boolean;
-  sessionImport: "native" | "seeded" | "handoff-file-only";
+  readonly staticMcp: boolean;
+  readonly staticInstructions: boolean;
+  readonly reverseRead: boolean; // Required for drift detection and init in v0.1, and for absorption in v0.2
+  readonly sessionExport: boolean;
+  readonly sessionImport: "native" | "seeded" | "handoff-file-only";
 }
 
 export interface HarnessStatus {
-  installed: boolean;
-  authenticated: boolean;
-  version?: string;
+  readonly installed: boolean;
+  readonly authenticated: boolean;
+  readonly version?: string;
+}
+
+export type FileChangeAction = "create" | "update" | "symlink" | "patch-json" | "noop";
+
+/** Writable context handed to apply(). Adapters never see the clock or a dry-run flag. */
+export interface ApplyContext {
+  readonly fs: Fs;               // writable filesystem
+  readonly backup: BackupSession; // one session per sync run
+}
+
+export interface ApplyResult {
+  readonly status: "written" | "unchanged" | "fallback";
+  readonly backupPath: string | undefined;
+  readonly detail?: string;
 }
 
 export interface FileChangePlan {
-  path: string;
-  action: "create" | "update" | "symlink" | "patch-json" | "noop";
-  summary: string;
-  before?: string; // current content, for diffs
-  after?: string;  // planned content, for diffs
-  apply: () => Promise<void>;
+  readonly scope: Scope;
+  readonly path: string;
+  readonly action: FileChangeAction;
+  readonly summary: string;
+  readonly before?: string; // current file text; undefined = missing file, or a symlink (see `link`)
+  readonly after?: string;  // planned file text; undefined = a symlink, or an advisory plan
+  readonly link?: { readonly before?: string; readonly after?: string }; // symlink target text
+  readonly warnings: readonly string[]; // planning never calls a warn callback
+  readonly expected: readonly ExpectedTarget[]; // what the lock records for this path after apply
+  readonly composable?: boolean; // apply() re-reads the file and patches only its own key, so plans may share a path
+  readonly apply: (ctx: ApplyContext) => Promise<ApplyResult>;
+}
+
+/** Runtime context an adapter is constructed with. Tests inject every path. */
+export interface AdapterContext {
+  readonly homeDir: string;
+  readonly userConfigDir: string;
+  readonly fs: ReadFs;   // read-only
+  readonly exec: Exec;
+  readonly env: Env;
+  readonly lock?: YokeStateLock;        // merged view of the validated lock files
+  readonly force?: boolean;             // --force
+  readonly symlinksSupported?: boolean; // false => copy fallback with a warning
 }
 
 export interface HarnessAdapter {
@@ -284,6 +315,16 @@ export interface HarnessAdapter {
   importAndLaunch?(session: YokeSessionIR, opts: LaunchOptions): Promise<void>;
 }
 ```
+
+**Planning is read-only.** `AdapterContext.fs` is a `ReadFs`, so `detect`, `readNativeState`, and `syncStatic` cannot write. Each plan's `apply(ctx)` closure receives an `ApplyContext` holding the writable `Fs` and the run's backup session. The only caller of `apply` is `executePlan` in `src/core/plan.ts`. A `noop` plan is never applied. `detect().authenticated` is a credentials heuristic; v0.1 runs no login probe. Adapters are created through `src/adapters/registry.ts` (`createAdapters`, `ADAPTER_FACTORIES`); building one performs no I/O, and nothing outside `src/adapters/` names a harness.
+
+### Sync pipeline (`src/core/plan.ts`)
+
+`buildSyncPlan(PlanRequest)` is the single planning path. It validates the request, loads and merges the scope files, loads the lock files (`<repo>/.yoke/yoke.lock` for `project` and `local`; `<userConfigDir>/yoke.lock` for `user`), constructs each configured adapter, calls `syncStatic`, checks that no two non-composable plans share a path (`PlanConflictError`), runs the 3-way drift check, and returns a `SyncPlan` (`plans`, `changes`, `drift`, `warnings`, `gate`, `blocked`, `locks`, `backupRoot`, `force`). It reads only and takes no clock. `PlanRequest` is `SyncRequest` without `writeFs` and `now`.
+
+The **gate** collects reasons: `drift` (native changes since the last sync), `lock-corrupt`, and `drift-unchecked` (a harness that cannot be reverse-read). `blocked` is `gate.length > 0 && !force`. `executePlan({ plan, fs, now, confirm? })` decides the gate first: clear when there are no reasons, forced under `--force`, otherwise `confirm` decides (present only in interactive runs; absent means refused). A refused gate returns before any write. Otherwise every non-`noop` plan is applied in order with one backup session, then the lock files are written last, each atomically and each backed up first when it already exists. A throwing `apply` stops the run, writes no lock, and returns `status: "failed"`. An instructions plan that reports `fallback` keeps the previous lock value. `SyncResult.status` is `applied`, `refused`, or `failed`.
+
+Scopes per command: `sync` plans `project` and `local`; `--global` plans `user` only; `--all` plans all three; `--global` with `--all` is a `SyncRequestError`, which the CLI maps to a usage error.
 
 ### Adapter Types (`src/core/schema.ts`)
 
@@ -327,7 +368,7 @@ interface LaunchOptions {
 }
 ```
 
-Planning receives a read-only filesystem; each `apply` closure holds the writable filesystem and the backup session. Adapters receive `fs`, `homeDir`, and `env` at construction, so tests can inject them. Conditional-block target validation uses the configured `harnesses` list, so a misspelled target is an error.
+Planning receives a read-only filesystem (see above); each `apply` closure receives the writable filesystem and the backup session. Adapters receive `AdapterContext` (`homeDir`, `userConfigDir`, `fs`, `exec`, `env`, and optional `lock`, `force`, `symlinksSupported`) at construction, so tests can inject them. Conditional-block target validation uses the configured `harnesses` list, so a misspelled target is an error.
 
 `ResolvedMcpServer.scopes` lists contributing scopes in ascending precedence. A stub with nothing beneath it is dropped by the merge. `SyncOptions` and `LaunchOptions` are plain TypeScript interfaces, not Zod schemas, and live in `schema.ts` so core and commands share one types module.
 
@@ -370,11 +411,11 @@ Planning receives a read-only filesystem; each `apply` closure holds the writabl
 
 | Command | Behavior |
 | :--- | :--- |
-| `yoke init [--import-from <source>...] [--dry-run] [--secrets <local\|ref>]` | Detects installed harnesses, imports existing MCPs & instructions into `yoke.yaml` + `AGENTS.md` (user-level MCP servers found only in a user-level native config are imported into the user-scope file `~/.config/yoke/yoke.yaml`, not the project's `yoke.yaml`), and optionally updates `.gitignore`. Sources are a harness name (`claude`, `agy`) or a file path (`CLAUDE.md`, `GEMINI.md`, a native MCP JSON). Importing native MCP JSON files directly (such as `.mcp.json` or agy's config) as a source is deferred past v0.1; v0.1 imports from harnesses and instruction files only. `yoke init --dry-run` prints the files init would write, with a diff, and writes nothing. `--secrets <local|ref>`: `local` (the default) writes literal secret values to the user-scope file `~/.config/yoke/yoke.yaml` at mode 0600; `ref` writes `${VAR}` references in their place. Project `yoke.yaml` always uses `${VAR}` references and never a literal secret, whatever the option. When `~/.config/yoke/yoke.yaml` already exists, init adds only the servers that are missing from it. It never replaces an existing entry, even with `--force`, and it keeps the file's comments. Without the flag, init prompts interactively; with the flag, it runs non-interactively. If instruction sources differ, init must not auto-merge; the user picks one. Literal secrets found in imported `env` or `headers` become `${VAR}` references or go to `yoke.local.yaml`, never into committed `yoke.yaml`. |
-| `yoke sync [--dry-run] [--global \| --all] [--force]` | Checks for native drift (unless `--force`); on drift, offers "Overwrite with yoke config" or "Abort" (v0.1; absorption arrives in v0.2). Compiles/symlinks configs across enabled harnesses, prints a colorized diff, and updates `.yoke/yoke.lock`. |
+| `yoke init [--import-from <source>...] [--dry-run] [--secrets <local\|ref>]` | Detects installed harnesses, imports existing MCPs & instructions into `yoke.yaml` + `AGENTS.md` (user-level MCP servers found only in a user-level native config are imported into the user-scope file `~/.config/yoke/yoke.yaml`, not the project's `yoke.yaml`), and optionally updates `.gitignore`. Sources are a harness name (`claude`, `agy`) or a file path (`CLAUDE.md`, `GEMINI.md`). Importing native MCP JSON files directly (such as `.mcp.json` or agy's config) as a source is deferred past v0.1; v0.1 imports from harnesses and instruction files only. `yoke init --dry-run` prints the files init would write, with a diff, and writes nothing. `--secrets <local|ref>`: `local` (the default) writes literal secret values to the user-scope file `~/.config/yoke/yoke.yaml` at mode 0600; `ref` writes `${VAR}` references in their place. Project `yoke.yaml` always uses `${VAR}` references and never a literal secret, whatever the option. When `~/.config/yoke/yoke.yaml` already exists, init adds only the servers that are missing from it. It never replaces an existing entry, even with `--force`, and it keeps the file's comments. Without the flag, init prompts interactively; with the flag, it runs non-interactively. If instruction sources differ, init must not auto-merge; the user picks one. Literal secrets found in imported `env` or `headers` become `${VAR}` references or go to `yoke.local.yaml`, never into committed `yoke.yaml`. |
+| `yoke sync [--dry-run] [--global \| --all] [--force]` | Plans once with `buildSyncPlan`, prints a colorized diff, and applies the same plan unless `--dry-run`. Default scopes are `project` and `local`; `--global` syncs only the user scope and needs no repository; `--all` syncs `user`, `project`, and `local`. `--global` together with `--all` is a usage error (exit 2). Native drift is checked unless `--force`: non-interactive drift is refused (exit 3, nothing written); interactive drift offers "Overwrite with yoke config" or "Abort" (v0.1; absorption arrives in v0.2). `--force` proceeds past drift with a warning, after backups. Updates `.yoke/yoke.lock` (and the user lock) only after every write succeeds. |
 | `yoke switch <target> [--from <source>] [--no-launch]` | Runs pre-flight drift check (absorption in v0.2) -> exports active session to `YokeSessionIR` -> imports/launches `<target>`. |
 | `yoke sessions` | Lists saved `YokeSessionIR` snapshots in `.yoke/sessions/` for resuming in any harness. |
-| `yoke doctor` | Verifies CLI binaries, auth status (`claude --version`, `agy models` *(unverified)*), broken symlinks, and config drift. |
+| `yoke doctor` | Read-only. Checks the repo, config files, each harness binary (`detect()`), credentials, the lock files, instruction symlinks, planned changes, and native drift. Auth is a credentials heuristic with no login probe in v0.1: a harness with no found credentials is reported as `unknown` (not verified), never `problem`. Probes time out and report `unknown`. Exit `1` only when a check is a `problem`. |
 
 ### Exit codes
 
@@ -410,37 +451,58 @@ Planning receives a read-only filesystem; each `apply` closure holds the writabl
 ```text
 yoke/
 ├── src/
-│   ├── cli.ts                  # Commander entrypoint
+│   ├── cli.ts                  # Process entrypoint: builds real deps, calls runCli
+│   ├── main.ts                 # Commander program, runCli, doctor planner (pure; deps injected)
 │   ├── core/
 │   │   ├── schema.ts           # Zod schemas (yoke.yaml, YokeStateLock, YokeSessionIR)
 │   │   ├── scopes.ts           # 3-tier loader & deep-merge engine
 │   │   ├── json-text.ts        # Text-preserving JSON patching (zero-clobber edits)
 │   │   ├── drift.ts            # 3-way diff; absorption in v0.2
+│   │   ├── plan.ts             # buildSyncPlan, executePlan, drift gate, lock file I/O
 │   │   ├── compiler.ts         # AGENTS.md conditional block compiler
-│   │   ├── git.ts              # Repo root, branch, status, diffStat helpers
+│   │   ├── git.ts              # Repo root, branch, status, diffStat helpers; exec
+│   │   ├── probe.ts            # Timed probes for doctor
+│   │   ├── secrets.ts          # Secret detection and ${VAR} conversion for init
 │   │   └── fs-safe.ts          # Atomic write, JSON patch, backup, symlink utils
 │   ├── adapters/
-│   │   ├── base.ts             # HarnessAdapter + HarnessCapabilities
+│   │   ├── base.ts             # HarnessAdapter, HarnessCapabilities, FileChangePlan, AdapterContext
+│   │   ├── registry.ts         # Adapter factory list (createAdapters)
 │   │   ├── claude.ts           # Claude Code adapter
 │   │   └── agy.ts              # Antigravity (agy) adapter
 │   └── commands/
-│       ├── init.ts
-│       ├── sync.ts
-│       ├── switch.ts
-│       ├── sessions.ts
-│       └── doctor.ts
+│       ├── exit.ts             # Exit codes and UsageError
+│       ├── init.ts             # init command
+│       ├── init-types.ts       # init shared types
+│       ├── init-sources.ts     # --import-from source parsing and reading
+│       ├── init-select.ts      # Conflict selection between sources
+│       ├── init-convert.ts     # Native -> canonical conversion, secrets policy
+│       ├── init-user.ts        # User-scope file writer (~/.config/yoke/yoke.yaml)
+│       ├── sync.ts             # sync command
+│       ├── sync-render.ts      # Plan, gate, refusal, and result rendering
+│       ├── sync-prompt.ts      # Interactive drift prompt (Overwrite / Abort)
+│       ├── doctor.ts           # doctor checks
+│       ├── doctor-format.ts    # Doctor report formatting and exit code
+│       ├── switch.ts           # not yet available
+│       └── sessions.ts         # not yet available
 ├── tests/
 │   ├── fixtures/               # Sample ~/.claude.json, .mcp.json, .jsonl logs
-│   ├── core/                   # compiler, fs-safe, json-text, scope loader, git tests
+│   ├── adapters/               # base, claude, agy, registry tests; helpers.ts
+│   ├── commands/               # sync, sync-render, sync-prompt, init-*, doctor tests; CLI tests
+│   ├── core/                   # compiler, fs-safe, json-text, plan, probe, secrets, scope loader, git tests
 │   ├── schema/                 # Zod schema tests
 │   ├── setup/                  # Test setup (isolated HOME)
 │   ├── scopes.test.ts
-│   ├── drift.test.ts           # placeholder until the adapter step
-│   └── adapters.test.ts        # placeholder until the adapter step
+│   ├── drift.test.ts
+│   ├── plan-adapters.test.ts
+│   └── adapters.test.ts
 └── package.json
 ```
 
 ### Milestones
-* **v0.1 — Static Core & Drift Protection:** `schema.ts`, `scopes.ts`, `fs-safe.ts`, `compiler.ts`, `drift.ts`, `claude` & `agy` static adapters (including `readNativeState`), `yoke init`, `yoke sync --dry-run`, `yoke doctor`.
+* **v0.1 — Static Core & Drift Protection (implemented on the integration branch):** `schema.ts`, `scopes.ts`, `fs-safe.ts`, `compiler.ts`, `drift.ts`, `plan.ts`, `claude` & `agy` static adapters (including `readNativeState`), `yoke init`, `yoke sync` (`--dry-run`, `--global`, `--all`, `--force`), `yoke doctor`. Deferred from v0.1:
+  * Hybrid-mode disable of user-scope Claude servers (reported as a warning).
+  * Verification of the agy `GEMINI.md` paths (user and project).
+  * agy auth probe (auth is always `unknown` in v0.1).
+  * Importing native MCP JSON files (`.mcp.json`, agy config) as an `init` source.
 * **v0.2 — Interactive Pre-Flight & Session Handoff:** `YokeSessionIR`, Claude `.jsonl` parser/writer (`claude --resume`), `agy` handoff launcher, `yoke switch <target>` with interactive drift absorption, `yoke sessions`.
 * **v0.3 — Ecosystem Adapters:** Add `opencode` and `gemini-cli` adapters to validate the `HarnessAdapter` abstraction for community contributors.
