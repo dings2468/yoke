@@ -16,7 +16,7 @@ yoke uses trunk-based development:
 
 | Purpose | Name | Base |
 |---|---|---|
-| Backlog task | `task-<id>-<slug>`, e.g. `task-1-empty-json-config` | `main` |
+| Backlog task | `task-<id>-<slug>`, e.g. `task-0001-empty-json-config` | `main` |
 | Small change without a task (typo, docs) | `<type>/<slug>`, e.g. `docs/readme-typo` | `main` |
 | Release preparation | `release-prep-vX.Y.Z` | `main` or `release/X.Y` |
 | Patch line (maintainer only) | `release/X.Y`, e.g. `release/0.1` | tag `vX.Y.Z` |
