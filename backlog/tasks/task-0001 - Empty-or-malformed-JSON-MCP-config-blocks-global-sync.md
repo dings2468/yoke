@@ -1,13 +1,15 @@
 ---
-id: TASK-1
+id: TASK-0001
 title: Empty or malformed JSON MCP config blocks global sync
 status: To Do
 assignee: []
 created_date: '2026-11-25T14:34:52Z'
+updated_date: '2026-11-25T21:03:30Z'
 labels:
   - agy
   - sync
   - doctor
+  - standard
 milestone: m-0
 dependencies: []
 priority: medium

@@ -1,7 +1,7 @@
 project_name: "yoke"
 default_status: "To Do"
 statuses: ["To Do", "In Progress", "Done"]
-labels: []
+labels: ["expedite", "standard", "tooling"]
 date_format: "yyyy-mm-dd"
 max_column_width: 20
 auto_open_browser: true
@@ -14,3 +14,4 @@ bypass_git_hooks: false
 check_active_branches: true
 active_branch_days: 30
 task_prefix: "task"
+zero_padded_ids: 4

@@ -192,7 +192,7 @@ Exit codes for every command are listed in [SPEC.md §7](SPEC.md#7-cli-command-s
 - **Native MCP JSON files are not an init source.** `yoke init` imports from harnesses and instruction files only, not `.mcp.json` or the agy config.
 - **`yoke init` has no concurrent-change check.** It does not detect files that change while it runs.
 - **Windows symlinks are not handled.** Links fall back with a warning.
-- **A malformed or empty native JSON file blocks sync.** `yoke sync --global` exits 1 and `yoke doctor` reports `invalid JSON in <path>` (for example an empty agy `mcp_config.json`). Tracked as TASK-1 for v0.2.
+- **A malformed or empty native JSON file blocks sync.** `yoke sync --global` exits 1 and `yoke doctor` reports `invalid JSON in <path>` (for example an empty agy `mcp_config.json`). Tracked as TASK-0001 for v0.2.
 
 ## Contributing
 

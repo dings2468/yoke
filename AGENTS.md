@@ -24,10 +24,10 @@ Read `SPEC.md` before making architectural changes. `SPEC.md` is the source of t
   ```bash
   backlog task list --plain                      # filter: --status "To Do" --labels bug
   backlog search "query" --plain
-  backlog task view TASK-1 --plain
+  backlog task view TASK-0001 --plain
   backlog decision list --plain
   backlog task create "Title" -d "Context" --type bug -l standard --ac "Criterion" -m v0.2
-  backlog task edit TASK-1 -s "In Progress"      # statuses: To Do, In Progress, Done
+  backlog task edit TASK-0001 -s "In Progress"      # statuses: To Do, In Progress, Done
   ```
 - **Kanban:** follow CONTRIBUTING.md "Kanban workflow" (WIP limit 2 In Progress, one class-of-service label per task, Definition of Done).
 - Run `backlog instructions overview` once per session, and `backlog <command> --help` for anything else; do not copy Backlog.md's docs here.
