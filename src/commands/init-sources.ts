@@ -25,7 +25,7 @@ function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-/** Parses one --import-from value (DI3). Paths resolve against cwd. Throws UsageError for a malformed token. */
+/** Parses one --import-from value. Paths resolve against cwd. Throws UsageError for a malformed token. */
 export function parseSourceToken(raw: string, cwd: string): SourceToken {
   if (raw.trim() === "") {
     throw new UsageError("empty --import-from value");
@@ -110,7 +110,7 @@ async function canonicalCandidate(
   return { path, content, origin: "existing" };
 }
 
-/** Lists harness import availability and instruction-file candidates (DI1, DI2). Reads only. */
+/** Lists harness import availability and instruction-file candidates. Reads only. */
 export async function listImportSources(input: {
   readonly adapters: readonly HarnessAdapter[];
   readonly repoPath: string;

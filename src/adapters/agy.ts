@@ -1,11 +1,20 @@
 /**
- * src/adapters/agy.ts: agy (Antigravity) paths and MCP entry translation (SPEC §6).
+ * src/adapters/agy.ts: agy (Antigravity) paths and MCP entry translation.
+ *
+ * agy mapping rules:
+ * - User MCP servers are written to `~/.gemini/config/mcp_config.json`, under the top-level `mcpServers` object. Only that
+ *   key is patched.
+ * - agy does not support legacy HTTP+SSE. `transport: sse` servers are skipped with a warning and are never written.
+ * - agy has no v0.1 project-level MCP config. Project and local servers are skipped with a warning and never written to
+ *   the global file.
+ * - `${VAR}` references are stored literally. agy does not expand them, so yoke warns for each server whose env or
+ *   headers use one.
  *
  * Facts used here:
  * - agy loads the project `GEMINI.md` alongside `AGENTS.md` (observed: a model turn listed both as loaded instruction files).
- * - The user `~/.gemini/GEMINI.md` location and the `agy` binary name are UNVERIFIED (SPEC §6).
+ * - The user `~/.gemini/GEMINI.md` location and the `agy` binary name are UNVERIFIED (to be verified; see the agy user GEMINI.md task).
  * - agy 1.5.16 does not expand `${VAR}` references. yoke stores them literally.
- * - agy 1.5.16 writes `serverUrl` for HTTP servers. yoke writes `url` (SPEC §6) and reads both keys.
+ * - agy 1.5.16 writes `serverUrl` for HTTP servers. yoke writes `url` (read both url and serverUrl) and reads both keys.
  * - agy has no SSE transport. SSE servers are never translated here.
  */
 import { join } from "node:path";
@@ -126,7 +135,7 @@ function isStringMap(value: JsonValue): boolean {
 }
 
 /**
- * Reads one agy entry (Q1). Returns `managed` with the canonical definition and extras. Returns `opaque`, with the
+ * Reads one agy entry. Returns `managed` with the canonical definition and extras. Returns `opaque`, with the
  * raw entry kept byte-for-byte, for an unknown `type`, an entry with neither a command nor a URL, or fields that do
  * not fit its transport (for example `command` with `url`, or `env` on an http entry). Throws NativeStateError for a
  * corrupt value: a non-string env or header value, a non-string-array `args`, an invalid name, `httpUrl`, or a `url`
@@ -200,7 +209,7 @@ export function fromAgyEntry(name: string, raw: JsonValue, path: string): Native
     return { kind: "opaque", raw, reason: "no command or url" };
   }
 
-  // agy ignores `type`, but a field that does not fit the entry's transport makes the entry opaque (SPEC §6).
+  // agy ignores `type`, but a field that does not fit the entry's transport makes the entry opaque.
   const transportKey =
     transport === "stdio" ? "command" : Object.hasOwn(raw, "url") ? "url" : "serverUrl";
   const foreignKeys = transport === "stdio" ? HTTP_ONLY_KEYS : STDIO_ONLY_KEYS;
@@ -356,8 +365,8 @@ async function planUserMcp(
 }
 
 /**
- * Plans the agy MCP config (SPEC §6). The user scope writes `mcp_config.json`. Project and local servers are never
- * written to the global file: each one produces a warning in an advisory plan that changes nothing.
+ * Plans the agy MCP config. The user scope writes `mcp_config.json`. Project and local servers are never
+ * written to the global file (see decision-0021): each one produces a warning in an advisory plan that changes nothing.
  */
 export async function planAgyMcp(
   ctx: AdapterContext,
@@ -396,7 +405,7 @@ export async function planAgyMcp(
 
 // #region AG3 sync
 
-/** Capabilities of the agy adapter in v0.1 (decision D11). */
+/** Capabilities of the agy adapter in v0.1. */
 export const AGY_CAPABILITIES: HarnessCapabilities = {
   staticMcp: true,
   staticInstructions: true,
@@ -431,7 +440,7 @@ async function planGeneratedRemoval(
   return planInstructionRemoval(ctx, input);
 }
 
-/** An advisory warning when a canonical AGENTS.md still has legacy yoke:*-only tags (decision 4). */
+/** An advisory warning when a canonical AGENTS.md still has legacy yoke:*-only tags. */
 async function legacyTagPlan(
   ctx: AdapterContext,
   scope: Scope,
@@ -452,10 +461,10 @@ async function legacyTagPlan(
 }
 
 /**
- * Plans the agy instruction files (decisions 2, 6-8). User scope links `<home>/.gemini/GEMINI.md` to the canonical user
+ * Plans the agy instruction files. User scope links `<home>/.gemini/GEMINI.md` to the canonical user
  * AGENTS.md. Project scope writes no file: a yoke-generated `<repo>/GEMINI.md` is removed with a backup, and a
  * user-written one is never touched. Legacy tags in AGENTS.md get a warning. The project GEMINI.md is observed to load
- * alongside AGENTS.md; the user `~/.gemini/GEMINI.md` location is UNVERIFIED (SPEC §6).
+ * alongside AGENTS.md; the user `~/.gemini/GEMINI.md` location is UNVERIFIED (to be verified; see the agy user GEMINI.md task).
  */
 async function planAgyInstructions(
   ctx: AdapterContext,
@@ -512,7 +521,7 @@ export async function planAgySync(
 
 /**
  * Detects the agy binary. Runs `agy --version` only, and writes nothing. `authenticated` is always false in v0.1.
- * v0.1 runs no login probe (SPEC §6); doctor reports auth as unknown.
+ * v0.1 runs no login probe; doctor reports auth as unknown.
  */
 export async function detectAgy(ctx: AdapterContext): Promise<HarnessStatus> {
   let result: ExecResult;

@@ -1,8 +1,14 @@
 /**
- * src/adapters/base.ts — harness adapter contract and shared, harness-neutral helpers (SPEC §6).
+ * src/adapters/base.ts — harness adapter contract and shared, harness-neutral helpers.
  *
  * Planning functions are pure reads through an injected ReadFs. Writes happen only inside FileChangePlan.apply(ctx),
  * which receives the writable Fs and the backup session. No clock, no process state, no home directory lookups.
+ *
+ * Planning is read-only: AdapterContext.fs is a ReadFs, so detect, readNativeState, and syncStatic cannot write. Each
+ * plan's apply(ctx) closure receives an ApplyContext holding the writable Fs and the run's backup session. The only
+ * caller of apply is executePlan in src/core/plan.ts, and a noop plan is never applied. detect().authenticated is a
+ * credentials heuristic; v0.1 runs no login probe. Adapters are created through src/adapters/registry.ts (createAdapters,
+ * ADAPTER_FACTORIES). Building one performs no I/O, and nothing outside src/adapters/ names a harness.
  */
 import { dirname, resolve } from "node:path";
 import type { ExpectedTarget } from "../core/drift.js";
@@ -48,6 +54,14 @@ import {
 } from "../core/schema.js";
 import { mergeMcpServers, type ScopeInputs } from "../core/scopes.js";
 
+/**
+ * What an adapter supports. The core degrades gracefully: a capability that is false skips the matching step.
+ * `staticMcp` and `staticInstructions` mean the adapter plans those native files during sync. `reverseRead` means
+ * readNativeState can read the native state back, which drift detection and init require in v0.1 (and absorption in
+ * v0.2). `sessionExport` and `sessionImport` are session handoff targets for v0.2; both v0.1 adapters declare
+ * `sessionExport: false`. `sessionImport` says how a session reaches the harness: "native" (the harness resumes it),
+ * "seeded" (launched with a handoff file), or "handoff-file-only".
+ */
 export interface HarnessCapabilities {
   readonly staticMcp: boolean;
   readonly staticInstructions: boolean;
@@ -78,8 +92,8 @@ export interface ApplyResult {
 }
 
 /**
- * One planned change to one native file. SPEC §6 fields `path`, `action`, `summary`, `before`, and `after` keep their
- * names and string types. `before` and `after` are file text for diffs; `undefined` means a missing file, or a symlink
+ * One planned change to one native file. The core fields `path`, `action`, `summary`, `before`, and `after` are strings;
+ * the native fields keep their names. `before` and `after` are file text for diffs; `undefined` means a missing file, or a symlink
  * (see `link`). The remaining fields are yoke-specific additions.
  */
 export interface FileChangePlan {
@@ -117,6 +131,11 @@ export interface AdapterContext {
   readonly symlinksSupported?: boolean;
 }
 
+/**
+ * The contract every harness implements. Planning (`detect`, `readNativeState`, `syncStatic`) is read-only, and writes
+ * happen only in `FileChangePlan.apply`. Optional methods are present only when the matching capability is declared.
+ * Adapters are constructed by the registry in src/adapters/registry.ts, and nothing outside src/adapters/ names a harness.
+ */
 export interface HarnessAdapter {
   readonly name: string;
   readonly capabilities: HarnessCapabilities;
@@ -411,7 +430,7 @@ export interface MergeEntriesInput {
 }
 
 /**
- * Merges desired servers into the native server map (Q1). Output order: native names that survive, in native order,
+ * Merges desired servers into the native server map. Output order: native names that survive, in native order,
  * then new desired names sorted. Unknown in-entry keys (`extras`) are kept only when the transport is unchanged.
  */
 export function mergeServerEntries(input: MergeEntriesInput): {
@@ -425,6 +444,7 @@ export function mergeServerEntries(input: MergeEntriesInput): {
   for (const [name, entry] of native) {
     const want = desired.get(name);
     if (entry.kind === "opaque") {
+      // Opaque entries are kept byte-for-byte; only a same-named yoke server is an error (see decision-0022).
       const detail = `${harness}: MCP server "${name}" in ${path} has an unsupported transport (${entry.reason})`;
       if (want === undefined) {
         out.push([name, entry.raw]);
@@ -477,9 +497,9 @@ export function mergeServerEntries(input: MergeEntriesInput): {
 }
 
 /**
- * Computes the new contents of a shared native name list (Q3). `after` removes only names yoke owned that are no
+ * Computes the new contents of a shared native name list. `after` removes only names yoke owned that are no
  * longer desired, keeps native order, and appends missing desired names sorted. `owned` claims a desired name
- * unless the user already listed it natively without yoke having added it (A7).
+ * unless the user already listed it natively without yoke having added it.
  */
 export function updateOwnedList(input: {
   readonly native: readonly string[];

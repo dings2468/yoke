@@ -1,5 +1,12 @@
 /**
- * src/adapters/claude.ts — Claude Code paths, native key names, and MCP entry translation (SPEC §6, decisions Q1 and Q2).
+ * src/adapters/claude.ts — Claude Code paths, native key names, and MCP entry translation.
+ *
+ * Claude native mapping:
+ * - User-scope MCP servers live under the top-level `mcpServers` key of `~/.claude.json`. Only that key is patched.
+ * - Project-scope MCP servers live in `./.mcp.json`.
+ * - Local-scope MCP servers live under `projects[<git root realpath>].mcpServers` in `~/.claude.json`.
+ * - A remote HTTP server is written as `"type": "http"` with a `"url"`. An SSE server keeps `"type": "sse"`.
+ * - An absolute `CLAUDE_CONFIG_DIR` moves the user config and user instructions into that directory.
  *
  * Only this file and src/adapters/claude*.ts may name Claude paths, keys, or transports. Planning is pure: every read
  * goes through an injected ReadFs, and nothing here touches the disk, the environment, or the clock beyond `env`.
@@ -62,7 +69,7 @@ export const CLAUDE_NAME = "claude";
 /** The one line Claude needs at the top of a user-written CLAUDE.md to load the shared AGENTS.md. */
 const CLAUDE_IMPORT_LINE = "@AGENTS.md";
 const BOM = "﻿";
-/** Lock list id for Claude's per-project disable list of user-scope servers (decision D7). */
+/** Lock list id for Claude's per-project disable list of user-scope servers (see decision-0020). */
 export const DISABLED_SERVERS_LIST = "disabled-servers";
 
 export interface ClaudePaths {
@@ -74,7 +81,7 @@ export interface ClaudePaths {
 }
 
 /**
- * User config and user instructions. An absolute `CLAUDE_CONFIG_DIR` moves both into that directory (A9); otherwise they
+ * User config and user instructions. An absolute `CLAUDE_CONFIG_DIR` moves both into that directory; otherwise they
  * live in the home directory. Project files live in the repository root.
  */
 export function claudePaths(homeDir: string, env: Env, repoPath: string): ClaudePaths {
@@ -102,7 +109,7 @@ export function disabledServersKey(repoKey: string): JsonKeyPath {
   return ["projects", repoKey, "disabledMcpServers"];
 }
 
-/** The `projects` key for a repository: its realpath, or the given path when it does not exist (decision D8). */
+/** The `projects` key for a repository: its realpath, or the given path when it does not exist. */
 export async function claudeRepoKey(fs: ReadFs, repoPath: string): Promise<string> {
   try {
     return await fs.realpath(repoPath);
@@ -159,7 +166,7 @@ function hasOwnKey(obj: JsonObject, key: string): boolean {
 /**
  * Reads one Claude entry. Owned keys are translated; every other key goes to `extras` verbatim. An entry with an unknown
  * transport, with no `type` and no string `command`, or with owned keys that do not fit its transport is opaque and kept
- * as-is (SPEC §6: an error only when yoke defines the same name, decided by mergeServerEntries). Corrupt owned keys throw
+ * as-is (an error only when yoke defines the same name, decided by mergeServerEntries). Corrupt owned keys throw
  * NativeStateError.
  */
 export function fromClaudeEntry(name: string, raw: JsonValue, path: string): NativeEntry {
@@ -346,8 +353,8 @@ async function readInstructions(fs: ReadFs, path: string) {
 }
 
 /**
- * Reads Claude's native state (SPEC §6, Q2). User tier: top-level `mcpServers`. Local tier: `projects[<repo>].mcpServers`
- * in the user config file. Project tier: `.mcp.json`. Names yoke owns in the per-project disable lists (D7, A6) show as
+ * Reads Claude's native state (see decision-0020). User tier: top-level `mcpServers`. Local tier: `projects[<repo>].mcpServers`
+ * in the user config file. Project tier: `.mcp.json`. Names yoke owns in the per-project disable lists show as
  * `enabled: false` in the local tier when a lower-tier definition exists. Never calls `ctx.exec`.
  */
 export async function readClaudeNativeState(
@@ -422,7 +429,7 @@ export async function readClaudeNativeState(
 }
 
 /**
- * Enabled servers that a scope should carry in its native file (Q2). Local uses the fully resolved definition from
+ * Enabled servers that a scope should carry in its native file. Local uses the fully resolved definition from
  * `config.mcps`, because Claude does not field-merge. Project drops names that the local layer stubs out, in compiled
  * mode only (hybrid mode uses the disable lists instead, CL3).
  */
@@ -455,7 +462,7 @@ function desiredServers(
 
 /**
  * Plans the MCP server key in each Claude file for the requested scopes. Every change is a key-scoped patch that
- * keeps the rest of the file. Native entries are merged with mergeServerEntries (Q1), so unknown keys survive.
+ * keeps the rest of the file. Native entries are merged with mergeServerEntries, so unknown keys survive.
  */
 export async function planClaudeMcp(
   ctx: AdapterContext,
@@ -515,7 +522,7 @@ export async function planClaudeMcp(
 
 // #region CL3 sync
 
-/** D11: sync and detect only. No session methods are implemented, so sessionExport is false. */
+/** v0.1 capabilities: sync and detect only. No session methods are implemented, so sessionExport is false. */
 export const CLAUDE_CAPABILITIES: HarnessCapabilities = {
   staticMcp: true,
   staticInstructions: true,
@@ -589,7 +596,7 @@ export async function planClaudeDisables(
   const desired = disabledNames(config).filter((name) => Object.hasOwn(post.user, name));
 
   if (config.mode === "hybrid") {
-    // Hybrid mode does not write the native list in v0.1 (SPEC §3, D1). It warns, leaves the list alone, and keeps owned names.
+    // Hybrid mode does not write the native list in v0.1. It warns, leaves the list alone, and keeps owned names.
     const hybridWarnings = desired.map(
       (name) =>
         `claude: hybrid mode does not disable user server "${name}" for this repo in v0.1; run /mcp disable ${name} inside Claude in this repo`,
@@ -699,7 +706,7 @@ async function planGeneratedRemoval(
   return planInstructionRemoval(ctx, input);
 }
 
-/** An advisory warning when a canonical AGENTS.md still has legacy yoke:*-only tags (decision 4). */
+/** An advisory warning when a canonical AGENTS.md still has legacy yoke:*-only tags. */
 async function legacyTagPlan(
   ctx: AdapterContext,
   scope: Scope,
@@ -721,7 +728,7 @@ async function legacyTagPlan(
 
 /**
  * An advisory warning for a user-written project CLAUDE.md whose first non-blank line is not `@AGENTS.md`. Yoke never
- * writes that file (decision 3). A file yoke generated (recorded or with the header) is left to the removal plan.
+ * writes that file. A file yoke generated (recorded or with the header) is left to the removal plan.
  */
 async function claudeImportPlan(
   ctx: AdapterContext,
@@ -770,7 +777,7 @@ export async function claudeDoctorWarnings(
 }
 
 /**
- * Plans Claude's instruction files (decisions 3, 6-8). User scope links CLAUDE.md to the canonical user AGENTS.md. Project
+ * Plans Claude's instruction files. User scope links CLAUDE.md to the canonical user AGENTS.md. Project
  * and local scope write no file: a yoke-generated CLAUDE.md or CLAUDE.local.md is removed with a backup, and a user-written
  * CLAUDE.md gets a warning when it does not import AGENTS.md. Legacy tags in AGENTS.md get a warning.
  */

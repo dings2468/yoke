@@ -52,7 +52,7 @@ export interface ImportSelection {
   readonly instructions: InstructionCandidate | undefined;
 }
 
-/** The user-scope yoke.yaml (U5): merged text, backed up before overwrite, created with mode 0600. */
+/** The user-scope yoke.yaml: merged text, backed up before overwrite, created with mode 0600. */
 export interface UserTextIntent {
   readonly kind: "text";
   readonly scope: "user";
