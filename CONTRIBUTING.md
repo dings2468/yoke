@@ -30,7 +30,7 @@ Never open a PR *from* `release/X.Y`. Always use a separate branch.
 Use [Conventional Commits](https://www.conventionalcommits.org/): `type(scope): summary`, imperative and lower case, no trailing period.
 
 - Types: `feat`, `fix`, `docs`, `test`, `refactor`, `chore`.
-- Common scopes: `schema`, `scopes`, `fs-safe`, `plan`, `drift`, `instructions`, `claude`, `agy`, `init`, `sync`, `doctor`, `cli`, `spec`, `agents`, `backlog`, `sandbox`, `release`.
+- Common scopes: `schema`, `scopes`, `fs-safe`, `plan`, `drift`, `instructions`, `claude`, `agy`, `init`, `sync`, `doctor`, `cli`, `vision`, `agents`, `backlog`, `sandbox`, `release`.
 - Do not use `chore(merge)`. Squash merging replaces merge commits.
 
 PRs are **squash-merged**. The **PR title becomes the commit subject** on `main` (GitHub appends ` (#N)`), and the PR description becomes the commit body. Write the title as a final commit subject. Commits inside the branch can be informal.
@@ -43,39 +43,41 @@ The squash commit is authored by the PR author (GitHub uses the PR author), so t
 - Link the backlog task in the description (`TASK-<id>`).
 - Every adapter change includes fixture-based vitest tests (see AGENTS.md).
 
-## Verification checklist (every PR)
+## Definition of Done
 
-```bash
-npm run typecheck
-npm test
-npm run check        # npm run check:fix applies fixes
-```
+A task is Done, and its PR is ready for review, when:
+1. every acceptance criterion is met and checked (`backlog task edit TASK-<id> --check-ac <n>`);
+2. `npm run typecheck`, `npm test`, `npm run check` pass (`npm run check:fix` applies fixes);
+3. adapter changes include fixture-based vitest tests (see AGENTS.md);
+4. a changed contract has its TSDoc updated where it is defined, changed user-facing behavior is in README.md, a changed harness support level is in VISION.md, and a new or changed technical rule has an accepted decision record;
+5. `backlog doctor` reports no problems;
+6. the task has a final summary and status Done, committed in the same PR.
 
-All three must pass before review.
+A PR without a task needs items 2 and 4.
 
-## Planning work with Backlog.md
+## Kanban workflow with Backlog.md
 
-Tasks live in `backlog/`. Use the `backlog` CLI; do not edit task files by hand.
-A milestone is a release version (milestone `v0.2` ships as `v0.2.0`).
+All planned work is a Backlog.md task in `backlog/`. Use the `backlog` CLI; do not edit task, decision, or milestone files by hand.
 
-```bash
-backlog milestone list
-backlog milestone add "v0.3" -d "Goals of v0.3"          # maintainer: one per planned release
-backlog task create "Title" -d "Context" --type bug --ac "Criterion" -m v0.3
-backlog task list -m v0.3 --plain
-backlog task edit TASK-<id> -s "In Progress"             # when work starts, on the task branch
-backlog task edit TASK-<id> -s Done --final-summary "What changed"   # in the same PR that finishes it
-```
+**Board.** `backlog board` shows To Do, In Progress, Done. To Do is the queue: pull expedite first, then by priority, then by order. In Progress holds at most **2** tasks (WIP limit). Check with `backlog task list -s "In Progress" --plain` before pulling, and finish or return a task before starting another. Done means the Definition of Done holds; a task is set to Done in the PR that finishes it.
 
-Task file changes are committed on the task branch with the code.
+**Classes of service.** Every task has exactly one of these labels:
+- `expedite`: a bug in a released version that blocks users, or a breach of a safety invariant. Pulled first; may exceed the WIP limit by one, at most one at a time; ships as a patch (see "Hotfixes").
+- `standard`: product features and bugs. Pulled in order; usually in a milestone.
+- `tooling`: dev environment, sandbox, CI, docs and process. Counts toward the WIP limit; usually no milestone.
 
-## Milestone flow (maintainer only)
+Topic labels (for example `agy`, `sync`) may be added.
 
-1. **Plan**: create the milestone and its tasks (above). Each task has acceptance criteria and, for bugs, a reproduction.
-2. **Implement**: one branch and PR per task. Verification passes in each PR. The task is set to Done in its PR.
-3. **Finish**: `backlog task list -m vX.Y --plain` shows everything Done, or the leftover tasks are moved to the next milestone (`backlog task edit TASK-<id> -m vX.Z`).
-4. **Release**: follow the release checklist below.
-5. **Close**: `backlog milestone archive vX.Y`.
+**Milestones.** A milestone is a release target (`v0.2` ships as `v0.2.0`). Create it with a one-sentence release goal: `backlog milestone add "vX.Y" -d "<what this release lets users do>"`. The CLI cannot edit the description later, so write it at creation. Tasks without a milestone are unscheduled; schedule one with `backlog task edit TASK-<id> -m vX.Y`. After the release, archive it with `backlog milestone archive vX.Y`.
+
+**Decisions.** A technical rule, format, or rejected alternative is a decision record: `backlog decision create "Title" --context "..." --decision "..." --alternatives "..." -s accepted`. To change one, create a new accepted record and run `backlog decision edit decision-<n> -s superseded --superseded-by decision-<m>`. Code comments cite `decision-<n>` only where the reason is not obvious.
+
+**Flow.**
+1. `backlog task create "Title" -d "Context" --type bug -l standard --ac "Criterion" -m vX.Y` (bugs include a reproduction).
+2. On the task branch, first commit: `backlog task edit TASK-<id> -s "In Progress"`.
+3. In the PR that finishes it: check the criteria and set `-s Done --final-summary "What changed"`. Task files are committed on the task branch with the code.
+
+**IDs on parallel branches.** IDs are assigned at creation. Run `git fetch origin` first so the CLI sees other active branches, and run `backlog doctor` before opening the PR.
 
 ## Releasing (maintainer only)
 
@@ -89,7 +91,7 @@ Version numbers live in `package.json`, `package-lock.json`, and `src/main.ts` (
    # edit src/main.ts: export const VERSION = "X.Y.Z";
    ```
 2. Update README.md (limits and features) and SPEC.md (roadmap: "released as vX.Y.Z") so they describe the released version.
-3. Run the verification checklist, then the manual sandbox checklist:
+3. Check the Definition of Done, then the manual sandbox checklist:
    ```bash
    npm run build
    npm run sandbox:build && npm run sandbox
