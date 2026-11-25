@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createNodeFs } from "../../src/core/fs-safe.js";
 import {
+  computeLockUpdate,
   LOCK_DIR,
   LOCK_FILE,
   lockFileFor,
@@ -119,5 +120,23 @@ describe("plan lock io", () => {
     expect(lockFileFor("user")).toBe("user");
     expect(lockFileFor("project")).toBe("repo");
     expect(lockFileFor("local")).toBe("repo");
+  });
+
+  it("writes a null instructionsHash when the desired instructions are absent", () => {
+    const update = computeLockUpdate({
+      file: "repo",
+      path: join(dir, LOCK_FILE),
+      previous: { status: "ok", path: join(dir, LOCK_FILE), lock: LOCK },
+      processed: ["fake:project"],
+      desired: new Map([["fake:project", { mcps: {}, instructions: null }]]),
+    });
+    expect(update.entries["fake:project"]?.instructionsHash).toBeNull();
+    expect(update.changed).toBe(true);
+    const text = serializeLock({
+      version: 1,
+      lastSyncedAt: LOCK.lastSyncedAt,
+      harnesses: update.entries,
+    });
+    expect(text).toContain('"instructionsHash": null');
   });
 });
