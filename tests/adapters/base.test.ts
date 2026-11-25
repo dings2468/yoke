@@ -193,7 +193,7 @@ describe("contract helpers", () => {
 
   describe("advisoryPlan", () => {
     it("is a noop with no before, after, or expected targets, and its apply does no I/O", async () => {
-      const path = join(sb.repo, "AGENTS.local.md");
+      const path = join(sb.repo, "CLAUDE.local.md");
       const plan = advisoryPlan("local", path, "skip local servers", [
         "local servers are not supported",
       ]);

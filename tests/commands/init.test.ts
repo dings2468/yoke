@@ -179,7 +179,7 @@ describe("runInit, non-interactive", () => {
     const gitignore = await readFile(join(repo, ".gitignore"), "utf8");
     expect(gitignore).toContain(".yoke/");
     expect(gitignore).toContain("yoke.local.yaml");
-    expect(gitignore).toContain("AGENTS.local.md");
+    expect(gitignore).not.toContain("AGENTS.local.md");
     const out = stdout.join("");
     expect(out).not.toContain("left in place");
     expect(out).toContain("next: yoke sync");

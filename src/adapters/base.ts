@@ -5,7 +5,6 @@
  * which receives the writable Fs and the backup session. No clock, no process state, no home directory lookups.
  */
 import { dirname, resolve } from "node:path";
-import { hasGeneratedHeader } from "../core/compiler.js";
 import type { ExpectedTarget } from "../core/drift.js";
 import {
   type BackupSession,
@@ -23,6 +22,7 @@ import {
   safeSymlink,
 } from "../core/fs-safe.js";
 import type { Env, Exec } from "../core/git.js";
+import { hasGeneratedHeader } from "../core/instructions.js";
 import {
   getAtPath,
   isJsonObject,
