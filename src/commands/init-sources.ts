@@ -4,8 +4,8 @@
  */
 import { resolve } from "node:path";
 import type { HarnessAdapter } from "../adapters/base.js";
-import { hasGeneratedHeader } from "../core/compiler.js";
 import { type FileStat, isNotFound, type ReadFs } from "../core/fs-safe.js";
+import { hasGeneratedHeader } from "../core/instructions.js";
 import type { NativeInstructions, PartialYokeConfig } from "../core/schema.js";
 import {
   type HarnessAvailability,
