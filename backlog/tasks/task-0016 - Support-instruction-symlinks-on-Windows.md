@@ -4,6 +4,7 @@ title: Support instruction symlinks on Windows
 status: To Do
 assignee: []
 created_date: '2026-11-25T21:04:02Z'
+updated_date: '2026-11-25T21:46:45Z'
 labels:
   - standard
 dependencies: []
@@ -15,7 +16,7 @@ ordinal: 15000
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-Deferred from v0.1. User-level instruction links on Windows need a path or a documented fallback.
+User-level instruction links on Windows need a path or a documented fallback.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria

@@ -4,6 +4,7 @@ title: Probe agy authentication in yoke doctor
 status: To Do
 assignee: []
 created_date: '2026-11-25T21:04:02Z'
+updated_date: '2026-11-25T21:46:45Z'
 labels:
   - standard
   - agy
@@ -17,7 +18,7 @@ ordinal: 11000
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-Deferred from v0.1. doctor currently uses a credentials heuristic for agy. Add a timed probe.
+doctor currently uses a credentials heuristic for agy. Add a timed probe.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria

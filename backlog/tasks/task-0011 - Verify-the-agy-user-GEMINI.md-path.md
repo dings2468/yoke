@@ -4,6 +4,7 @@ title: Verify the agy user GEMINI.md path
 status: To Do
 assignee: []
 created_date: '2026-11-25T21:04:02Z'
+updated_date: '2026-11-25T21:46:45Z'
 labels:
   - standard
   - agy
@@ -16,7 +17,7 @@ ordinal: 10000
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-Deferred from v0.1. Confirm where agy reads its user-level GEMINI.md and record the evidence.
+Confirm where agy reads its user-level GEMINI.md and record the evidence.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria

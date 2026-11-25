@@ -4,6 +4,7 @@ title: Detect concurrent file changes during yoke init
 status: To Do
 assignee: []
 created_date: '2026-11-25T21:04:02Z'
+updated_date: '2026-11-25T21:46:45Z'
 labels:
   - standard
   - cli
@@ -16,7 +17,7 @@ ordinal: 14000
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-Deferred from v0.1. Detect a target that changed between plan and write during yoke init.
+Detect a target that changed between plan and write during yoke init.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria
