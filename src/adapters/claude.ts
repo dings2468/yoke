@@ -69,7 +69,7 @@ export const CLAUDE_NAME = "claude";
 /** The one line Claude needs at the top of a user-written CLAUDE.md to load the shared AGENTS.md. */
 const CLAUDE_IMPORT_LINE = "@AGENTS.md";
 const BOM = "﻿";
-/** Lock list id for Claude's per-project disable list of user-scope servers (see decision-20). */
+/** Lock list id for Claude's per-project disable list of user-scope servers (see decision-0020). */
 export const DISABLED_SERVERS_LIST = "disabled-servers";
 
 export interface ClaudePaths {
@@ -353,7 +353,7 @@ async function readInstructions(fs: ReadFs, path: string) {
 }
 
 /**
- * Reads Claude's native state (see decision-20). User tier: top-level `mcpServers`. Local tier: `projects[<repo>].mcpServers`
+ * Reads Claude's native state (see decision-0020). User tier: top-level `mcpServers`. Local tier: `projects[<repo>].mcpServers`
  * in the user config file. Project tier: `.mcp.json`. Names yoke owns in the per-project disable lists show as
  * `enabled: false` in the local tier when a lower-tier definition exists. Never calls `ctx.exec`.
  */

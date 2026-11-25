@@ -366,7 +366,7 @@ async function planUserMcp(
 
 /**
  * Plans the agy MCP config. The user scope writes `mcp_config.json`. Project and local servers are never
- * written to the global file (see decision-21): each one produces a warning in an advisory plan that changes nothing.
+ * written to the global file (see decision-0021): each one produces a warning in an advisory plan that changes nothing.
  */
 export async function planAgyMcp(
   ctx: AdapterContext,

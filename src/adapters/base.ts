@@ -444,7 +444,7 @@ export function mergeServerEntries(input: MergeEntriesInput): {
   for (const [name, entry] of native) {
     const want = desired.get(name);
     if (entry.kind === "opaque") {
-      // Opaque entries are kept byte-for-byte; only a same-named yoke server is an error (see decision-22).
+      // Opaque entries are kept byte-for-byte; only a same-named yoke server is an error (see decision-0022).
       const detail = `${harness}: MCP server "${name}" in ${path} has an unsupported transport (${entry.reason})`;
       if (want === undefined) {
         out.push([name, entry.raw]);
