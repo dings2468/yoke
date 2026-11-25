@@ -1,0 +1,8 @@
+{
+  "mcpServers": {},
+  "projects": {
+    "__REPO__": {
+      "disabledMcpServers": "github"
+    }
+  }
+}

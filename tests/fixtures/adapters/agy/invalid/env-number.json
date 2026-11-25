@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "bad": {
+      "command": "bad",
+      "env": {
+        "PORT": 8080
+      }
+    }
+  }
+}

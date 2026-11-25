@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "both": {
+      "command": "c",
+      "url": "https://x.test/mcp"
+    }
+  }
+}

@@ -1,0 +1,8 @@
+version: 1
+harnesses: [claude, agy]
+mcps:
+  pg:
+    transport: stdio
+    command: pg
+  github:
+    enabled: false

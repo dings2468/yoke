@@ -1,0 +1,5 @@
+version: 1
+mcpServers:
+  search:
+    transport: stdio
+    command: npx

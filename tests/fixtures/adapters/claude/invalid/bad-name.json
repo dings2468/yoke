@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "-bad": {
+      "type": "stdio",
+      "command": "bad"
+    }
+  }
+}

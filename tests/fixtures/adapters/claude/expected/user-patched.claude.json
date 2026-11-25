@@ -1,0 +1,70 @@
+{
+  "numStartups": 7,
+  "10": "x",
+  "tipsHistory": "a } and \"mcpServers\" inside",
+  "projects": {
+    "__REPO__": {
+      "allowedTools": [],
+      "mcpServers": {
+        "native-local": {
+          "type": "stdio",
+          "command": "nl"
+        }
+      },
+      "enabledMcpjsonServers": ["fs"],
+      "disabledMcpjsonServers": [],
+      "disabledMcpServers": ["other"],
+      "hasTrustDialogAccepted": true
+    },
+    "/other/repo": {
+      "mcpServers": {
+        "x": {
+          "type": "stdio",
+          "command": "x"
+        }
+      }
+    }
+  },
+  "mcpServers": {
+    "oauthy": {
+      "type": "http",
+      "url": "https://o.test/mcp",
+      "oauth": {
+        "clientId": "abc",
+        "callbackPort": 8123
+      },
+      "timeout": 5
+    },
+    "wsy": {
+      "type": "ws",
+      "url": "ws://w.test"
+    },
+    "events": {
+      "type": "sse",
+      "url": "https://events.test/sse"
+    },
+    "github": {
+      "type": "stdio",
+      "command": "gh",
+      "args": ["mcp"],
+      "env": {
+        "GITHUB_TOKEN": "${GITHUB_TOKEN}"
+      }
+    },
+    "linear": {
+      "type": "http",
+      "url": "https://mcp.linear.test/mcp",
+      "headers": {
+        "Authorization": "Bearer ${LINEAR_API_KEY}"
+      }
+    },
+    "tool": {
+      "type": "stdio",
+      "command": "t"
+    }
+  },
+  "oauthAccount": {
+    "emailAddress": "dev@example.test"
+  },
+  "zeta": "ünïcode"
+}

@@ -23,7 +23,7 @@ Developers increasingly run multiple AI coding CLIs side by side to work around 
 ```text
                      ┌──▶ Static Sync Engine  ──▶ .mcp.json / ~/.claude.json / CLAUDE.md
 yoke.yaml            │                            ~/.gemini/config/mcp_config.json / GEMINI.md
-AGENTS.md  ──────────┼──▶ 3-Way Drift Engine  ◄── .yoke/state.json (last-synced hashes)
+AGENTS.md  ──────────┼──▶ 3-Way Drift Engine  ◄── .yoke/yoke.lock (last-synced hashes)
                      │
                      └──▶ Session Mediator    ──▶ Claude .jsonl ◄─▶ session.json ◄─▶ agy launch/import
 ```
@@ -31,7 +31,7 @@ AGENTS.md  ──────────┼──▶ 3-Way Drift Engine  ◄─
 ### Tech Stack
 * **Language / Runtime:** TypeScript (Node 20+ / Bun)
 * **Core Libraries:**
-  * `zod` — strict schema validation for `yoke.yaml`, `.yoke/state.json`, and `YokeSessionIR`
+  * `zod` — strict schema validation for `yoke.yaml`, `.yoke/yoke.lock`, and `YokeSessionIR`
   * `yaml` — YAML parsing and serialization
   * `commander` — CLI command routing
   * `@clack/prompts` — interactive pre-flight drift prompts
@@ -44,17 +44,19 @@ AGENTS.md  ──────────┼──▶ 3-Way Drift Engine  ◄─
 
 Precedence is strictly **`local` > `project` > `user`**.
 
+`<userConfigDir>` is `$XDG_CONFIG_HOME/yoke` when `XDG_CONFIG_HOME` is an absolute path, otherwise `~/.config/yoke`. An empty or comment-only scope file is rejected; every scope file needs at least `version: 1`.
+
 | Scope | Source Files | Git Status | Purpose |
 | :--- | :--- | :--- | :--- |
-| **`user`** | `~/.config/yoke/yoke.yaml`<br>`~/.config/yoke/AGENTS.md` | N/A | Global MCPs, global coding style, default harness list |
+| **`user`** | `<userConfigDir>/yoke.yaml`<br>`<userConfigDir>/AGENTS.md` | N/A | Global MCPs, global coding style, default harness list |
 | **`project`** | `./yoke.yaml`<br>`./AGENTS.md` | Committed | Team-shared MCPs, repo architecture & rules |
 | **`local`** | `./yoke.local.yaml`<br>`./AGENTS.local.md` | Gitignored | Personal overrides, local-only MCPs, disabling inherited MCPs |
 
 ### Sync Modes (Handling Harness Asymmetry)
 Claude Code natively supports a 3rd `local` tier (`CLAUDE.local.md` + per-project overrides in `~/.claude.json`). Other harnesses may not expose an equivalent tier; the scope split for `agy` is unverified in v0.1. `yoke` supports two modes:
 
-1. **`compiled` (Default):** Treats all generated harness files (`.mcp.json`, `CLAUDE.md`, `GEMINI.md`) as gitignored build artifacts. `yoke sync` merges `project + local` into the target files for harnesses that support them, without polluting `git status`. Project and local MCP servers are not written for `agy` in v0.1 (see §6).
-2. **`hybrid` (Mixed Teams):** Writes only `project` into tracked files so teammates without `yoke` still get valid configs. Maps `local` natively where supported (Claude), warns if a non-env `local` override cannot be isolated for a harness, and relies on `.env.local` (gitignored) for private tokens.
+1. **`compiled` (Default):** Treats all generated harness files (`.mcp.json`, `CLAUDE.md`, `GEMINI.md`) as gitignored build artifacts. `yoke sync` writes project servers and instructions into the target files for harnesses that support them, and writes local-scope Claude servers to `projects[<git root>].mcpServers` in `~/.claude.json`, never into a repo file, without polluting `git status`. Project and local MCP servers are not written for `agy` in v0.1 (see §6).
+2. **`hybrid` (Mixed Teams):** Writes only `project` into tracked files so teammates without `yoke` still get valid configs. Maps `local` natively where supported (Claude), warns if a non-env `local` override cannot be isolated for a harness, and relies on `.env.local` (gitignored) for private tokens. In `hybrid` mode, a project-level disable of a user-scope Claude server is not written to a tracked file in v0.1; it is reported as a warning instead (see §6).
 
 ### 3.1 Merge rules
 
@@ -64,6 +66,8 @@ When the same MCP server name appears in more than one scope, entries are merged
 * **Arrays** (`args`) are replaced whole, never concatenated.
 * **A change of `transport`** replaces the whole server entry; no fields are inherited from the lower scope.
 * **`enabled: false` with no `transport`** is not a transport change. It is a stub that suppresses the inherited entry.
+* **`enabled` across a redefinition:** a same-transport override that omits `enabled` keeps the inherited `enabled` value, so a disabled server stays disabled. A transport change resets `enabled` to `true` unless the override sets it.
+* **Non-MCP keys** (`mode`, `instructions`, `session`, and so on) take the value from the highest scope that sets them. `harnesses` is replaced whole, never merged.
 
 * **Full definitions only:** every non-stub entry must be a complete definition with a `transport`. Partial overrides of a lower-scope server (for example, only `env` in `yoke.local.yaml`) are not valid; use a full entry, which follows the transport-change or field-merge rules above.
 * **YAML `null` is rejected** everywhere in v0.1 (`env: { KEY: null }`, `headers: null`, and so on).
@@ -112,7 +116,7 @@ session:
   includeGitDiffStat: true
 ```
 
-**Defaults (applied after merge, not in the scope files):** `mode: compiled`, `harnesses: []`, `instructions.source: AGENTS.md`, `instructions.preferSymlink: true`, `session.maxTurns: 40`, `session.includeGitDiffStat: true`.
+**Defaults (applied after merge, not in the scope files):** `mode: compiled`, `harnesses: []`, `instructions.source: AGENTS.md` (in `ResolvedYokeConfig` the source is an absolute path, resolved against the declaring file's directory or, for the default, the repo root), `instructions.preferSymlink: true`, `session.maxTurns: 40`, `session.includeGitDiffStat: true`.
 
 **Schema rules** (`src/core/schema.ts`):
 * **Strict objects:** unknown keys are rejected in every file and nested object (this catches typos such as `mcpServers:`). An older `yoke` therefore rejects files written by a newer one.
@@ -137,10 +141,18 @@ Summarize large directory scans before proposing edits.
 ```
 
 * If no conditional blocks and no `AGENTS.local.md` exist (and `preferSymlink: true`), adapters create symlinks (`CLAUDE.md -> AGENTS.md`, `GEMINI.md -> AGENTS.md`).
-* Otherwise, adapters compile target-specific files prefixed with `<!-- GENERATED BY YOKE — DO NOT EDIT DIRECTLY -->`.
+* Otherwise, adapters compile target-specific files prefixed with `<!-- GENERATED BY YOKE — DO NOT EDIT DIRECTLY -->`. The compiled form is also used when symlinks are unsupported.
 
-### 4.3 Drift Lockfile (`.yoke/state.json`, gitignored)
+**Compilation rules:**
+* A tag must stand alone on its line. Tags inside fenced code blocks are ignored.
+* Nested, unclosed, or mismatched tags are errors.
+* Blocks for targets other than the one being compiled are removed; the tag lines of the matching target are dropped and its content kept.
+* The local instruction file (`AGENTS.local.md`, derived from the source path by putting `.local` before the extension) is compiled the same way and appended after a blank line.
+
+### 4.3 Drift Lockfile (`.yoke/yoke.lock` and `<userConfigDir>/yoke.lock`, gitignored)
 Tracks the last-synced canonical snapshot per harness so `yoke` can distinguish **new native edits** from **stale values**:
+
+There are two lock files: the project lock `.yoke/yoke.lock`, and the user-scope lock `<userConfigDir>/yoke.lock`, which holds the entries for the user scope. Both are gitignored and both have the same schema, described below.
 
 ```typescript
 export interface YokeStateLock {
@@ -200,7 +212,7 @@ export interface YokeSessionIR {
 Developers frequently add MCP servers (`claude mcp add ...`) or edit `CLAUDE.md` natively mid-session. Before overwriting configs (`yoke sync`) or switching harnesses (`yoke switch <target>`), `yoke` runs a **3-way drift check**:
 
 1. **Reverse-read:** Call `sourceAdapter.readNativeState(repoPath)` to parse the harness's current native MCPs and instructions back into canonical `yoke` format.
-2. **Diff against `.yoke/state.json`:** Any server or instruction block that differs from the last-synced hash is flagged as a *native mutation*.
+2. **Diff against `.yoke/yoke.lock`:** Any server or instruction block that differs from the last-synced hash is flagged as a *native mutation*.
 3. **Prompt the user (v0.1):** Drift offers only two choices:
    ```text
    Native changes detected in Claude Code since last sync:
@@ -230,7 +242,7 @@ In v0.2, the prompt is replaced by an absorption flow:
        Only MCPs (skip instruction diff)
        No — switch session only (keep changes in Claude)
    ```
-4. **Absorb & Sync:** Write accepted changes back to `yoke.yaml` / `yoke.local.yaml`, sync the target harness, update `.yoke/state.json`, and proceed with the session handoff.
+4. **Absorb & Sync:** Write accepted changes back to `yoke.yaml` / `yoke.local.yaml`, sync the target harness, update `.yoke/yoke.lock`, and proceed with the session handoff.
 
 ---
 
@@ -240,24 +252,57 @@ Every harness implements a single interface (`src/adapters/base.ts`) with an exp
 
 ```typescript
 export interface HarnessCapabilities {
-  staticMcp: boolean;
-  staticInstructions: boolean;
-  reverseRead: boolean; // Required for drift detection and init in v0.1, and for absorption in v0.2
-  sessionExport: boolean;
-  sessionImport: "native" | "seeded" | "handoff-file-only";
+  readonly staticMcp: boolean;
+  readonly staticInstructions: boolean;
+  readonly reverseRead: boolean; // Required for drift detection and init in v0.1, and for absorption in v0.2
+  readonly sessionExport: boolean;
+  readonly sessionImport: "native" | "seeded" | "handoff-file-only";
 }
 
 export interface HarnessStatus {
-  installed: boolean;
-  authenticated: boolean;
-  version?: string;
+  readonly installed: boolean;
+  readonly authenticated: boolean;
+  readonly version?: string;
+}
+
+export type FileChangeAction = "create" | "update" | "symlink" | "patch-json" | "noop";
+
+/** Writable context handed to apply(). Adapters never see the clock or a dry-run flag. */
+export interface ApplyContext {
+  readonly fs: Fs;               // writable filesystem
+  readonly backup: BackupSession; // one session per sync run
+}
+
+export interface ApplyResult {
+  readonly status: "written" | "unchanged" | "fallback";
+  readonly backupPath: string | undefined;
+  readonly detail?: string;
 }
 
 export interface FileChangePlan {
-  path: string;
-  action: "create" | "update" | "symlink" | "patch-json" | "noop";
-  summary: string;
-  apply: () => Promise<void>;
+  readonly scope: Scope;
+  readonly path: string;
+  readonly action: FileChangeAction;
+  readonly summary: string;
+  readonly before?: string; // current file text; undefined = missing file, or a symlink (see `link`)
+  readonly after?: string;  // planned file text; undefined = a symlink, or an advisory plan
+  readonly link?: { readonly before?: string; readonly after?: string }; // symlink target text
+  readonly warnings: readonly string[]; // planning never calls a warn callback
+  readonly expected: readonly ExpectedTarget[]; // what the lock records for this path after apply
+  readonly composable?: boolean; // apply() re-reads the file and patches only its own key, so plans may share a path
+  readonly apply: (ctx: ApplyContext) => Promise<ApplyResult>;
+}
+
+/** Runtime context an adapter is constructed with. Tests inject every path. */
+export interface AdapterContext {
+  readonly homeDir: string;
+  readonly userConfigDir: string;
+  readonly fs: ReadFs;   // read-only
+  readonly exec: Exec;
+  readonly env: Env;
+  readonly lock?: YokeStateLock;        // merged view of the validated lock files
+  readonly force?: boolean;             // --force
+  readonly symlinksSupported?: boolean; // false => copy fallback with a warning
 }
 
 export interface HarnessAdapter {
@@ -270,6 +315,16 @@ export interface HarnessAdapter {
   importAndLaunch?(session: YokeSessionIR, opts: LaunchOptions): Promise<void>;
 }
 ```
+
+**Planning is read-only.** `AdapterContext.fs` is a `ReadFs`, so `detect`, `readNativeState`, and `syncStatic` cannot write. Each plan's `apply(ctx)` closure receives an `ApplyContext` holding the writable `Fs` and the run's backup session. The only caller of `apply` is `executePlan` in `src/core/plan.ts`. A `noop` plan is never applied. `detect().authenticated` is a credentials heuristic; v0.1 runs no login probe. Adapters are created through `src/adapters/registry.ts` (`createAdapters`, `ADAPTER_FACTORIES`); building one performs no I/O, and nothing outside `src/adapters/` names a harness.
+
+### Sync pipeline (`src/core/plan.ts`)
+
+`buildSyncPlan(PlanRequest)` is the single planning path. It validates the request, loads and merges the scope files, loads the lock files (`<repo>/.yoke/yoke.lock` for `project` and `local`; `<userConfigDir>/yoke.lock` for `user`), constructs each configured adapter, calls `syncStatic`, checks that no two non-composable plans share a path (`PlanConflictError`), runs the 3-way drift check, and returns a `SyncPlan` (`plans`, `changes`, `drift`, `warnings`, `gate`, `blocked`, `locks`, `backupRoot`, `force`). It reads only and takes no clock. `PlanRequest` is `SyncRequest` without `writeFs` and `now`.
+
+The **gate** collects reasons: `drift` (native changes since the last sync), `lock-corrupt`, and `drift-unchecked` (a harness that cannot be reverse-read). `blocked` is `gate.length > 0 && !force`. `executePlan({ plan, fs, now, confirm? })` decides the gate first: clear when there are no reasons, forced under `--force`, otherwise `confirm` decides (present only in interactive runs; absent means refused). A refused gate returns before any write. Otherwise every non-`noop` plan is applied in order with one backup session, then the lock files are written last, each atomically and each backed up first when it already exists. A throwing `apply` stops the run, writes no lock, and returns `status: "failed"`. An instructions plan that reports `fallback` keeps the previous lock value. `SyncResult.status` is `applied`, `refused`, or `failed`.
+
+Scopes per command: `sync` plans `project` and `local`; `--global` plans `user` only; `--all` plans all three; `--global` with `--all` is a `SyncRequestError`, which the CLI maps to a usage error.
 
 ### Adapter Types (`src/core/schema.ts`)
 
@@ -313,6 +368,8 @@ interface LaunchOptions {
 }
 ```
 
+Planning receives a read-only filesystem (see above); each `apply` closure receives the writable filesystem and the backup session. Adapters receive `AdapterContext` (`homeDir`, `userConfigDir`, `fs`, `exec`, `env`, and optional `lock`, `force`, `symlinksSupported`) at construction, so tests can inject them. Conditional-block target validation uses the configured `harnesses` list, so a misspelled target is an error.
+
 `ResolvedMcpServer.scopes` lists contributing scopes in ascending precedence. A stub with nothing beneath it is dropped by the merge. `SyncOptions` and `LaunchOptions` are plain TypeScript interfaces, not Zod schemas, and live in `schema.ts` so core and commands share one types module.
 
 ### Target Capability Matrix
@@ -332,8 +389,9 @@ interface LaunchOptions {
 | :--- | :--- | :--- |
 | **User MCP** | `~/.claude.json` (patch *only* `mcpServers`) | `~/.gemini/config/mcp_config.json` (top-level `mcpServers` object; patch only that key) |
 | **Project MCP** | `./.mcp.json` | Not supported in v0.1 |
-| **Remote HTTP Key** | `"type": "http"`, `"url": "..."` | `"url": "..."` (`readNativeState` also accepts the legacy alias `serverUrl`) |
-| **Disable (`enabled: false`)** | Entry is omitted | `"disabled": true`, emitted only when the merged result still has a full definition. A stub with only `enabled: false` (no transport) suppresses the inherited entry. |
+| **Local MCP** | `projects[<git root realpath>].mcpServers` in `~/.claude.json` | Not supported in v0.1; local servers are skipped with a warning (see mapping rules) |
+| **Remote HTTP Key** | `"type": "http"`, `"url": "..."` | `"url": "..."` is the key yoke writes (`readNativeState` also accepts the legacy alias `serverUrl`). agy 1.5.16 writes `serverUrl` when set via its CLI; yoke reads both and writes `url`. |
+| **Disable (`enabled: false`)** | For a project-level disable of a user-scope server, write the server name into `projects[<repo>].disabledMcpServers` in `~/.claude.json`, and track the name in `.yoke/yoke.lock` so only yoke-added names are removed later. This key is undocumented in Claude Code (undocumented; verified against Claude Code 2.1.331). A probe showed that `disabledMcpjsonServers` does not disable a user-scope server, so it is not used. Claude's approval list shares that key's meaning for rejected names, so yoke cannot tell its entries apart; hybrid-mode disables are deferred. If the write is not possible, yoke warns and names the file, the harness, the scope, and the manual fix (`/mcp disable`). | `"disabled": true`, emitted only when the merged result still has a full definition. A stub with only `enabled: false` (no transport) suppresses the inherited entry. |
 | **User Instructions** | `~/.claude/CLAUDE.md` | `~/.gemini/GEMINI.md` *(unverified)* |
 | **Project Instructions** | `./CLAUDE.md` (+ `./CLAUDE.local.md` in hybrid) | `./GEMINI.md` *(unverified)* |
 | **Session Export** | Latest `.jsonl` in `~/.claude/projects/<repo-hash>/` | Latest local `agy` session log or `.yoke/HANDOFF.md` |
@@ -342,6 +400,10 @@ interface LaunchOptions {
 **Mapping rules:**
 * agy does not support legacy HTTP+SSE. `transport: sse` servers are skipped for agy with a warning in `sync` and `doctor`, and are excluded from agy's `mcpHashes`. Claude keeps `type: "sse"`.
 * agy project-level MCP is not supported in v0.1 (unverified; no evidence of a per-project mechanism). Project and local MCP servers are SKIPPED for agy with a warning. They are never written to the global file.
+* Unknown keys inside an MCP entry are kept on rewrite when the transport is unchanged and are excluded from drift. Unknown top-level keys in a native config file are never parsed or modified.
+* An entry with an unknown transport (for example Claude's `ws`) is left unchanged and not managed. It is an error only when yoke defines a server with the same name, unless `--force` is passed.
+* An entry whose fields do not fit its transport (for example `headers` on a stdio entry, or `command` on an http entry) is kept byte-for-byte and marked opaque. It produces a warning. It is an error only when yoke defines a server with the same name, unless `--force` is passed. Corrupt values (non-string env or header values, `args` that is not a string list, an invalid server name) remain errors.
+* `${VAR}` is stored literally in both harnesses. Claude expands it at runtime; agy does not, so yoke warns for each agy server whose env or headers use `${VAR}`.
 
 ---
 
@@ -349,21 +411,37 @@ interface LaunchOptions {
 
 | Command | Behavior |
 | :--- | :--- |
-| `yoke init [--import-from <source>...]` | Detects installed harnesses, imports existing MCPs & instructions into `yoke.yaml` + `AGENTS.md`, and optionally updates `.gitignore`. Sources are a harness name (`claude`, `agy`) or a file path (`CLAUDE.md`, `GEMINI.md`, a native MCP JSON). Without the flag, init prompts interactively; with the flag, it runs non-interactively. If instruction sources differ, init must not auto-merge; the user picks one. Literal secrets found in imported `env` or `headers` become `${VAR}` references or go to `yoke.local.yaml`, never into committed `yoke.yaml`. |
-| `yoke sync [--dry-run] [--global \| --all] [--force]` | Checks for native drift (unless `--force`); on drift, offers "Overwrite with yoke config" or "Abort" (v0.1; absorption arrives in v0.2). Compiles/symlinks configs across enabled harnesses, prints a colorized diff, and updates `.yoke/state.json`. |
+| `yoke init [--import-from <source>...] [--dry-run] [--secrets <local\|ref>]` | Detects installed harnesses, imports existing MCPs & instructions into `yoke.yaml` + `AGENTS.md` (user-level MCP servers found only in a user-level native config are imported into the user-scope file `~/.config/yoke/yoke.yaml`, not the project's `yoke.yaml`), and optionally updates `.gitignore`. Sources are a harness name (`claude`, `agy`) or a file path (`CLAUDE.md`, `GEMINI.md`). Importing native MCP JSON files directly (such as `.mcp.json` or agy's config) as a source is deferred past v0.1; v0.1 imports from harnesses and instruction files only. `yoke init --dry-run` prints the files init would write, with a diff, and writes nothing. `--secrets <local|ref>`: `local` (the default) writes literal secret values to the user-scope file `~/.config/yoke/yoke.yaml` at mode 0600; `ref` writes `${VAR}` references in their place. Project `yoke.yaml` always uses `${VAR}` references and never a literal secret, whatever the option. When `~/.config/yoke/yoke.yaml` already exists, init adds only the servers that are missing from it. It never replaces an existing entry, even with `--force`, and it keeps the file's comments. Without the flag, init prompts interactively; with the flag, it runs non-interactively. If instruction sources differ, init must not auto-merge; the user picks one. Literal secrets found in imported `env` or `headers` become `${VAR}` references or go to `yoke.local.yaml`, never into committed `yoke.yaml`. |
+| `yoke sync [--dry-run] [--global \| --all] [--force]` | Plans once with `buildSyncPlan`, prints a colorized diff, and applies the same plan unless `--dry-run`. Default scopes are `project` and `local`; `--global` syncs only the user scope and needs no repository; `--all` syncs `user`, `project`, and `local`. `--global` together with `--all` is a usage error (exit 2). Native drift is checked unless `--force`: non-interactive drift is refused (exit 3, nothing written); interactive drift offers "Overwrite with yoke config" or "Abort" (v0.1; absorption arrives in v0.2). `--force` proceeds past drift with a warning, after backups. Updates `.yoke/yoke.lock` (and the user lock) only after every write succeeds. |
 | `yoke switch <target> [--from <source>] [--no-launch]` | Runs pre-flight drift check (absorption in v0.2) -> exports active session to `YokeSessionIR` -> imports/launches `<target>`. |
 | `yoke sessions` | Lists saved `YokeSessionIR` snapshots in `.yoke/sessions/` for resuming in any harness. |
-| `yoke doctor` | Verifies CLI binaries, auth status (`claude --version`, `agy models` *(unverified)*), broken symlinks, and config drift. |
+| `yoke doctor` | Read-only. Checks the repo, config files, each harness binary (`detect()`), credentials, the lock files, instruction symlinks, planned changes, and native drift. Auth is a credentials heuristic with no login probe in v0.1: a harness with no found credentials is reported as `unknown` (not verified), never `problem`. Probes time out and report `unknown`. Exit `1` only when a check is a `problem`. |
+
+### Exit codes
+
+| Code | Meaning | Returned by |
+| :--- | :--- | :--- |
+| `0` | Success, nothing to do, or a clean check. `--help` and `--version` also exit `0`. | all commands |
+| `1` | Failure: `doctor` found at least one problem, or the command failed at runtime (invalid `yoke.yaml`, unreadable native state, plan conflict, apply failure, import error). | `sync`, `init`, `doctor`, `switch` |
+| `2` | Usage error: unknown option, bad or missing argument, or an interactive prompt required without a terminal. | all commands |
+| `3` | Drift refusal: native changes detected and the run was non-interactive without `--force`, or the user chose "Abort". A blocked dry run also returns `3`. | `sync`, `switch` |
+| `130` | Interrupted: the user cancelled a prompt or sent SIGINT before anything was written. | `init`, `sync`, `switch` |
+
+`yoke sessions` is not yet available; when added it returns only `0`, `1`, and `2`. `--dry-run` returns the same code a real run would, so `yoke sync --dry-run` can be used as a CI drift check.
 
 ---
 
 ## 8. Non-Negotiable Safety Invariants
 
 1. **Zero-Clobber JSON Patching:** Never overwrite any shared harness config (`~/.claude.json`, agy `mcp_config.json`, and other shared files) wholesale. Read -> parse -> patch *only* the target key (e.g., `mcpServers`) -> atomic write (write to `.tmp` + `rename`).
-2. **Automatic Backups:** Always back up. Before `yoke` overwrites or patches any file, it copies the original to `~/.config/yoke/backups/<timestamp>/`. This includes yoke-managed files when drift is detected and the user chooses overwrite, and JSON-patched shared files (`~/.claude.json`, agy `mcp_config.json`), which are never considered managed. A file is "yoke-managed" if it carries the `GENERATED` header or is a symlink yoke created.
+
+   **Temp file (§8.1):** the temp file is `<name>.<random>.yoke.tmp` in the target's directory, created exclusively (`wx`) and renamed into place.
+2. **Automatic Backups:** Always back up. Before `yoke` overwrites or patches any file, it copies the original to `<userConfigDir>/backups/<timestamp>/`. This includes yoke-managed files when drift is detected and the user chooses overwrite, and JSON-patched shared files (`~/.claude.json`, agy `mcp_config.json`), which are never considered managed. A file is "yoke-managed" if it carries the `GENERATED` header or is a symlink yoke created.
+
+   **Backup location (§8.2):** backups go to `<userConfigDir>/backups/<timestamp>/`, where the timestamp is ISO-8601 with `:` and `.` replaced by `-`. The original absolute path is mirrored under that directory. A `-N` suffix avoids collisions between sessions. The directory is mode `0700`. Writes never follow a yoke-managed instruction symlink; the symlink is replaced instead.
 3. **Dry-Run Parity:** `sync` always computes a `FileChangePlan[]` before touching disk; `--dry-run` executes the exact same planning pipeline without calling `apply()`.
-4. **No Secret Leakage:** Never expand `${ENV_VAR}` values into plaintext inside generated project files; preserve variable references in the target harness's native syntax.
-5. **No Silent Overwrites:** If a native file differs from `.yoke/state.json`, `yoke sync` must prompt (or abort in non-interactive CI unless `--force` is passed).
+4. **No Secret Leakage:** Never expand `${ENV_VAR}` values into plaintext inside generated project files; preserve variable references in the target harness's native syntax. The user-scope file in the user config directory may hold literal values under `--secrets local`, written at mode 0600; generated project files never do.
+5. **No Silent Overwrites:** If a native file differs from `.yoke/yoke.lock`, `yoke sync` must prompt (or abort in non-interactive CI unless `--force` is passed).
 6. **Lossy-but-Clean Session IR:** Never copy provider-specific thinking/thought signatures or raw multi-hundred-line file dumps into `YokeSessionIR`. Flatten tool calls into compact `actions[]` summaries.
 
 ---
@@ -373,33 +451,58 @@ interface LaunchOptions {
 ```text
 yoke/
 ├── src/
-│   ├── cli.ts                  # Commander entrypoint
+│   ├── cli.ts                  # Process entrypoint: builds real deps, calls runCli
+│   ├── main.ts                 # Commander program, runCli, doctor planner (pure; deps injected)
 │   ├── core/
 │   │   ├── schema.ts           # Zod schemas (yoke.yaml, YokeStateLock, YokeSessionIR)
 │   │   ├── scopes.ts           # 3-tier loader & deep-merge engine
+│   │   ├── json-text.ts        # Text-preserving JSON patching (zero-clobber edits)
 │   │   ├── drift.ts            # 3-way diff; absorption in v0.2
+│   │   ├── plan.ts             # buildSyncPlan, executePlan, drift gate, lock file I/O
 │   │   ├── compiler.ts         # AGENTS.md conditional block compiler
-│   │   ├── git.ts              # Repo root, branch, status, diffStat helpers
+│   │   ├── git.ts              # Repo root, branch, status, diffStat helpers; exec
+│   │   ├── probe.ts            # Timed probes for doctor
+│   │   ├── secrets.ts          # Secret detection and ${VAR} conversion for init
 │   │   └── fs-safe.ts          # Atomic write, JSON patch, backup, symlink utils
 │   ├── adapters/
-│   │   ├── base.ts             # HarnessAdapter + HarnessCapabilities
+│   │   ├── base.ts             # HarnessAdapter, HarnessCapabilities, FileChangePlan, AdapterContext
+│   │   ├── registry.ts         # Adapter factory list (createAdapters)
 │   │   ├── claude.ts           # Claude Code adapter
 │   │   └── agy.ts              # Antigravity (agy) adapter
 │   └── commands/
-│       ├── init.ts
-│       ├── sync.ts
-│       ├── switch.ts
-│       ├── sessions.ts
-│       └── doctor.ts
+│       ├── exit.ts             # Exit codes and UsageError
+│       ├── init.ts             # init command
+│       ├── init-types.ts       # init shared types
+│       ├── init-sources.ts     # --import-from source parsing and reading
+│       ├── init-select.ts      # Conflict selection between sources
+│       ├── init-convert.ts     # Native -> canonical conversion, secrets policy
+│       ├── init-user.ts        # User-scope file writer (~/.config/yoke/yoke.yaml)
+│       ├── sync.ts             # sync command
+│       ├── sync-render.ts      # Plan, gate, refusal, and result rendering
+│       ├── sync-prompt.ts      # Interactive drift prompt (Overwrite / Abort)
+│       ├── doctor.ts           # doctor checks
+│       ├── doctor-format.ts    # Doctor report formatting and exit code
+│       ├── switch.ts           # not yet available
+│       └── sessions.ts         # not yet available
 ├── tests/
 │   ├── fixtures/               # Sample ~/.claude.json, .mcp.json, .jsonl logs
+│   ├── adapters/               # base, claude, agy, registry tests; helpers.ts
+│   ├── commands/               # sync, sync-render, sync-prompt, init-*, doctor tests; CLI tests
+│   ├── core/                   # compiler, fs-safe, json-text, plan, probe, secrets, scope loader, git tests
+│   ├── schema/                 # Zod schema tests
+│   ├── setup/                  # Test setup (isolated HOME)
 │   ├── scopes.test.ts
 │   ├── drift.test.ts
+│   ├── plan-adapters.test.ts
 │   └── adapters.test.ts
 └── package.json
 ```
 
 ### Milestones
-* **v0.1 — Static Core & Drift Protection:** `schema.ts`, `scopes.ts`, `fs-safe.ts`, `compiler.ts`, `drift.ts`, `claude` & `agy` static adapters (including `readNativeState`), `yoke init`, `yoke sync --dry-run`, `yoke doctor`.
+* **v0.1 — Static Core & Drift Protection (implemented on the integration branch):** `schema.ts`, `scopes.ts`, `fs-safe.ts`, `compiler.ts`, `drift.ts`, `plan.ts`, `claude` & `agy` static adapters (including `readNativeState`), `yoke init`, `yoke sync` (`--dry-run`, `--global`, `--all`, `--force`), `yoke doctor`. Deferred from v0.1:
+  * Hybrid-mode disable of user-scope Claude servers (reported as a warning).
+  * Verification of the agy `GEMINI.md` paths (user and project).
+  * agy auth probe (auth is always `unknown` in v0.1).
+  * Importing native MCP JSON files (`.mcp.json`, agy config) as an `init` source.
 * **v0.2 — Interactive Pre-Flight & Session Handoff:** `YokeSessionIR`, Claude `.jsonl` parser/writer (`claude --resume`), `agy` handoff launcher, `yoke switch <target>` with interactive drift absorption, `yoke sessions`.
 * **v0.3 — Ecosystem Adapters:** Add `opencode` and `gemini-cli` adapters to validate the `HarnessAdapter` abstraction for community contributors.
