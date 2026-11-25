@@ -567,7 +567,8 @@ function disabledDefs(
  * Plans Claude's per-project disable list for user-scope servers (`projects[<repo>].disabledMcpServers` in the user
  * config). Runs only when `local` is in `opts.scopes`. Names come from the merged config's disabled set that exist in
  * the user tier. A malformed list throws unless `force` is set; then nothing is written, the lock's previous owned
- * names are kept, and each wanted name gets a fallback warning.
+ * names are kept, and each wanted name gets a fallback warning. In hybrid mode nothing is written: the list is left alone,
+ * the lock's owned names are kept, and each wanted name gets a warning to disable it inside Claude.
  */
 export async function planClaudeDisables(
   ctx: AdapterContext,
@@ -586,6 +587,29 @@ export async function planClaudeDisables(
   const lockOwned =
     ctx.lock?.harnesses[stateKey(CLAUDE_NAME, "local")]?.ownedNames?.[DISABLED_SERVERS_LIST] ?? [];
   const desired = disabledNames(config).filter((name) => Object.hasOwn(post.user, name));
+
+  if (config.mode === "hybrid") {
+    // Hybrid mode does not write the native list in v0.1 (SPEC §3, D1). It warns, leaves the list alone, and keeps owned names.
+    const hybridWarnings = desired.map(
+      (name) =>
+        `claude: hybrid mode does not disable user server "${name}" for this repo in v0.1; run /mcp disable ${name} inside Claude in this repo`,
+    );
+    const hybridKept = lockOwned.filter((name) => Object.hasOwn(post.user, name));
+    return [
+      {
+        ...advisoryPlan(
+          "local",
+          paths.userConfig,
+          `claude: hybrid mode: ${paths.userConfig} projects[${repoKey}].disabledMcpServers left unchanged`,
+          hybridWarnings,
+        ),
+        expected: [
+          { kind: "owned-names", scope: "local", list: DISABLED_SERVERS_LIST, names: lockOwned },
+          { kind: "mcps", scope: "local", mcps: disabledDefs(hybridKept, post) },
+        ],
+      },
+    ];
+  }
 
   const file = await readJsonIfExists(ctx.fs, paths.userConfig);
   const root = topLevelObject(file?.value, paths.userConfig);

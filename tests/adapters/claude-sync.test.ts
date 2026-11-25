@@ -217,6 +217,70 @@ describe("planClaudeSync: per-project disable of a user-scope server", () => {
   });
 });
 
+describe("planClaudeDisables: hybrid mode", () => {
+  const HYBRID_PROJECT_STUB = "version: 1\nmode: hybrid\nmcps:\n  github:\n    enabled: false\n";
+
+  it("plans a noop with a warning per name and leaves the file bytes unchanged", async () => {
+    await copyFixture(sb, "claude/home/.claude.json", userConfigPath());
+    const before = await readFile(userConfigPath(), "utf8");
+    const config = await inlineConfig({ user: USER_WITH_GITHUB, project: HYBRID_PROJECT_STUB });
+    const plans = await planClaudeDisables(makeAdapterContext(sb), config, syncOpts(["local"]), {
+      user: { github: githubDef },
+      project: {},
+    });
+
+    expect(plans).toHaveLength(1);
+    const [plan] = plans;
+    expect(plan?.action).toBe("noop");
+    expect(plan?.warnings).toEqual([
+      'claude: hybrid mode does not disable user server "github" for this repo in v0.1; run /mcp disable github inside Claude in this repo',
+    ]);
+    await plan?.apply(makeApplyContext(sb));
+    expect(await readFile(userConfigPath(), "utf8")).toBe(before);
+  });
+
+  it("keeps the lock's owned names in expected", async () => {
+    await copyFixture(sb, "claude/home/.claude.json", userConfigPath());
+    const config = await inlineConfig({ user: USER_WITH_GITHUB, project: HYBRID_PROJECT_STUB });
+    const lock = lockFrom({
+      "claude:local": {
+        mcpHashes: {},
+        instructionsHash: null,
+        ownedNames: { "disabled-servers": ["x"] },
+      },
+    });
+    const plans = await planClaudeDisables(
+      makeAdapterContext(sb, { lock }),
+      config,
+      syncOpts(["local"]),
+      {
+        user: { github: githubDef },
+        project: {},
+      },
+    );
+
+    expect(plans[0]?.expected).toContainEqual({
+      kind: "owned-names",
+      scope: "local",
+      list: "disabled-servers",
+      names: ["x"],
+    });
+  });
+
+  it("compiled mode still writes the list and emits no hybrid warning", async () => {
+    await copyFixture(sb, "claude/home/.claude.json", userConfigPath());
+    const config = await inlineConfig({ user: USER_WITH_GITHUB, project: PROJECT_STUB_GITHUB });
+    const plans = await planClaudeDisables(makeAdapterContext(sb), config, syncOpts(["local"]), {
+      user: { github: githubDef },
+      project: {},
+    });
+
+    expect(plans.flatMap((plan) => plan.warnings)).toEqual([]);
+    await applyAll(plans);
+    expect(repoEntry(await readUserConfig()).disabledMcpServers).toEqual(["other", "github"]);
+  });
+});
+
 describe("planClaudeSync: round trip", () => {
   it("applies --all, reads back in sync, and re-plans as noop", async () => {
     await copyFixture(sb, "claude/home/.claude.json", userConfigPath());
